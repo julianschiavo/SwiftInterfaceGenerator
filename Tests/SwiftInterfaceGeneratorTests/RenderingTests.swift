@@ -1359,7 +1359,7 @@ struct ComplexRenderingTests {
     }
 
     @Test
-    func underscoreStringProcessingRegexRewrittenToSwiftRegex() {
+    func underscoreStringProcessingRegexUsesStringProcessingImport() {
         let interface = renderingBuilder.makeInterface(
             demangledSymbols: [
                 "nominal type descriptor for Mod.Schema",
@@ -1371,7 +1371,137 @@ struct ComplexRenderingTests {
         )
 
         let norm = normalizedInterface(interface)
-        #expect(!norm.contains("_StringProcessing"))
-        #expect(norm.contains("Swift.Regex<A>") || norm.contains("Regex<A>"))
+        #expect(norm.contains("import _StringProcessing"))
+        #expect(norm.contains("_StringProcessing.Regex<A>"))
+        #expect(!norm.contains("Swift.Regex"))
+    }
+
+    @Test
+    func packExpansionUsesEachInArgumentsAndConstraints() {
+        let interface = renderingBuilder.makeInterface(
+            demangledSymbols: [
+                "protocol descriptor for Mod.Fragment",
+                "nominal type descriptor for Mod.Builder",
+                "Mod.Builder.init<each A where A: Mod.Fragment>(repeat A) -> Mod.Builder",
+                "Mod.Builder.append<each A where A: Mod.Fragment>(repeat A) -> Mod.Builder",
+            ],
+            targetTriple: "arm64-apple-macosx15.0",
+            moduleName: "Mod",
+            compilerVersion: "Test"
+        )
+
+        let norm = normalizedInterface(interface)
+        #expect(norm.contains("public init<each A>(_: repeat each A) where repeat each A : Fragment"))
+        #expect(
+            norm.contains(
+                "public func append<each A>(_: repeat each A) -> Builder where repeat each A : Fragment"
+            )
+        )
+    }
+
+    @Test
+    func asyncConformancesAttachToNestedTypesAndImportConcurrency() {
+        let interface = renderingBuilder.makeInterface(
+            demangledSymbols: [
+                "nominal type descriptor for Mod.Stream",
+                "nominal type descriptor for Mod.Stream.AsyncIterator",
+                "protocol conformance descriptor for Mod.Stream<A>.AsyncIterator : Swift.AsyncIteratorProtocol in Mod",
+                "protocol conformance descriptor for Mod.Stream<A> : Swift.AsyncSequence in Mod",
+                "static Mod.Stream.make() -> Mod.Stream<A>",
+                "Mod.Stream.AsyncIterator.next(isolation: isolated Swift.Actor?) async throws -> Swift.Int?",
+            ],
+            targetTriple: "arm64-apple-macosx15.0",
+            moduleName: "Mod",
+            compilerVersion: "Test"
+        )
+
+        let norm = normalizedInterface(interface)
+        #expect(norm.contains("import _Concurrency"))
+        #expect(norm.contains("public struct Stream<A>: _Concurrency.AsyncSequence {"))
+        #expect(norm.contains("public struct AsyncIterator: _Concurrency.AsyncIteratorProtocol {"))
+        #expect(norm.contains("public func next(isolation: isolated _Concurrency.Actor?) async throws -> Swift.Int?"))
+        #expect(!norm.contains("Swift.AsyncSequence"))
+        #expect(!norm.contains("Swift.AsyncIteratorProtocol"))
+        #expect(!norm.contains("Swift.Actor"))
+    }
+
+    @Test
+    func keywordNamedNestedTypesAreEscapedInDeclarationsAndTypeReferences() {
+        let interface = renderingBuilder.makeInterface(
+            demangledSymbols: [
+                "nominal type descriptor for Mod.Server",
+                "nominal type descriptor for Mod.Server.Protocol",
+                "property descriptor for static Mod.Server.Protocol.shared : Mod.Server.Protocol",
+                "static Mod.Server.Protocol.shared.getter : Mod.Server.Protocol",
+                "Mod.Server.init(protocol: Mod.Server.Protocol) -> Mod.Server",
+            ],
+            targetTriple: "arm64-apple-macosx15.0",
+            moduleName: "Mod",
+            compilerVersion: "Test"
+        )
+
+        let norm = normalizedInterface(interface)
+        #expect(norm.contains("public struct `Protocol` {"))
+        #expect(norm.contains("public static var shared: Server.`Protocol` { get }"))
+        #expect(norm.contains("public init(`protocol`: Server.`Protocol`)"))
+    }
+
+    @Test
+    func unsupportedExternalModuleMembersAreFilteredOut() {
+        let filteringBuilder = SwiftInterfaceBuilder(renderableExternalModules: [])
+        let interface = filteringBuilder.makeInterface(
+            demangledSymbols: [
+                "nominal type descriptor for Mod.Schema",
+                "Mod.Schema.init(schema: HiddenFramework.Node, source: Swift.String) -> Mod.Schema",
+                "Mod.Schema.node() -> HiddenFramework.Node",
+            ],
+            targetTriple: "arm64-apple-macosx15.0",
+            moduleName: "Mod",
+            compilerVersion: "Test"
+        )
+
+        let norm = normalizedInterface(interface)
+        #expect(!norm.contains("HiddenFramework"))
+        #expect(!norm.contains("init(schema:"))
+        #expect(!norm.contains("func node"))
+    }
+
+    @Test
+    func unresolvedAssociatedTypeMembersAreFilteredOut() {
+        let interface = renderingBuilder.makeInterface(
+            demangledSymbols: [
+                "protocol descriptor for Mod.Transformable",
+                "associated type descriptor for Mod.Transformable.Part",
+                "nominal type descriptor for Mod.Stream",
+                "nominal type descriptor for Mod.Stream.Snapshot",
+                "property descriptor for Mod.Stream.Snapshot.value : T.Part",
+                "Mod.Stream.Snapshot.value.getter : T.Part",
+            ],
+            targetTriple: "arm64-apple-macosx15.0",
+            moduleName: "Mod",
+            compilerVersion: "Test"
+        )
+
+        let norm = normalizedInterface(interface)
+        #expect(!norm.contains("var value"))
+    }
+
+    @Test
+    func generableStyleConformersGetSelfPartiallyGeneratedTypealias() {
+        let interface = renderingBuilder.makeInterface(
+            demangledSymbols: [
+                "protocol descriptor for Mod.Generable",
+                "associated type descriptor for Mod.Generable.PartiallyGenerated",
+                "nominal type descriptor for Mod.Payload",
+                "protocol conformance descriptor for Mod.Payload : Mod.Generable in Mod",
+            ],
+            targetTriple: "arm64-apple-macosx15.0",
+            moduleName: "Mod",
+            compilerVersion: "Test"
+        )
+
+        let norm = normalizedInterface(interface)
+        #expect(norm.contains("associatedtype PartiallyGenerated"))
+        #expect(norm.contains("public typealias PartiallyGenerated = Self"))
     }
 }

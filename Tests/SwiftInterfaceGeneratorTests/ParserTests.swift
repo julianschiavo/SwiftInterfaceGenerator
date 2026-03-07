@@ -142,6 +142,16 @@ struct ConformanceDescriptorTests {
         #expect(result?.owner == "Outer.Inner")
         #expect(result?.conformance == "Swift.Hashable")
     }
+
+    @Test
+    func nestedTypeAfterGenericOwnerIsPreserved() {
+        let result = builder.parseConformanceDescriptor(
+            from: "protocol conformance descriptor for Sample.Stream<A>.AsyncIterator : Swift.AsyncIteratorProtocol in Sample",
+            moduleName: "Sample"
+        )
+        #expect(result?.owner == "Stream.AsyncIterator")
+        #expect(result?.conformance == "Swift.AsyncIteratorProtocol")
+    }
 }
 
 // MARK: - Property Descriptor

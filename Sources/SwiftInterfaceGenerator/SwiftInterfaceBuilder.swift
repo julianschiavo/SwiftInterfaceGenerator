@@ -6,6 +6,8 @@ import Foundation
 /// symbol strings, discovers type declarations (structs, classes, enums, protocols) and their
 /// members, then renders a valid `.swiftinterface` file as a string.
 struct SwiftInterfaceBuilder: Sendable {
+    private let renderableExternalModules: Set<String>?
+
     /// An intermediate representation of a discovered type declaration.
     private struct Declaration: Sendable {
         /// The kind of Swift type declaration.
@@ -176,7 +178,9 @@ struct SwiftInterfaceBuilder: Sendable {
         }
     }
 
-    init() {}
+    init(renderableExternalModules: Set<String>? = nil) {
+        self.renderableExternalModules = renderableExternalModules
+    }
 
     /// Builds a complete `.swiftinterface` file string from demangled symbols.
     ///
@@ -515,7 +519,11 @@ struct SwiftInterfaceBuilder: Sendable {
             "import Swift",
         ]
 
-        for module in discoveredImports(from: declarations) {
+        for module in discoveredImports(
+            from: declarations,
+            knownTypeComponents: knownTypeComponents,
+            moduleName: moduleName
+        ) {
             lines.append("import \(module)")
         }
         lines.append("")
@@ -579,7 +587,7 @@ struct SwiftInterfaceBuilder: Sendable {
             moduleName: moduleName
         )
         let genericClause = genericParameters.isEmpty ? "" : "<\(genericParameters.joined(separator: ", "))>"
-        let name = simpleName(of: fullName)
+        let name = escapedIdentifier(simpleName(of: fullName))
         let conformanceClause = renderedConformanceClause(
             for: declaration,
             protocolNames: protocolNames,
@@ -629,6 +637,14 @@ struct SwiftInterfaceBuilder: Sendable {
             )
         }
 
+        for typealiasName in selfAliasedAssociatedTypes(
+            for: declaration,
+            declarations: declarations,
+            moduleName: moduleName
+        ) {
+            body.append("\(indent)  \(memberAccessPrefix)typealias \(escapedIdentifier(typealiasName)) = Self")
+        }
+
         for enumCase in declaration.enumCases.sorted(by: { $0.order < $1.order }) {
             if let rawPayload = enumCase.rawPayload {
                 body.append(
@@ -643,6 +659,16 @@ struct SwiftInterfaceBuilder: Sendable {
             guard !property.rawType.contains("CoreGraphics.Region") else {
                 continue
             }
+            guard
+                !containsUnrenderableExternalModuleReference(
+                    property.rawType,
+                    knownTypeComponents: knownTypeComponents,
+                    moduleName: moduleName
+                ),
+                !containsUnresolvedAssociatedTypeReference(property.rawType)
+            else {
+                continue
+            }
             let renderedType = renderedTypeName(
                 property.rawType,
                 protocolNames: protocolNames,
@@ -655,6 +681,20 @@ struct SwiftInterfaceBuilder: Sendable {
         }
 
         for subscriptMember in declaration.subscripts.sorted(by: { $0.order < $1.order }) {
+            guard
+                !containsUnrenderableExternalModuleReference(
+                    subscriptMember.rawArguments,
+                    knownTypeComponents: knownTypeComponents,
+                    moduleName: moduleName
+                ),
+                !containsUnrenderableExternalModuleReference(
+                    subscriptMember.rawReturnType,
+                    knownTypeComponents: knownTypeComponents,
+                    moduleName: moduleName
+                )
+            else {
+                continue
+            }
             let renderedArguments = (try? renderedArgumentList(
                 subscriptMember.rawArguments,
                 protocolNames: protocolNames,
@@ -677,6 +717,7 @@ struct SwiftInterfaceBuilder: Sendable {
             if let rendered = renderedCallable(
                 initializer,
                 protocolNames: protocolNames,
+                knownTypeComponents: knownTypeComponents,
                 level: level + 1,
                 isProtocolRequirement: isProtocol,
                 moduleName: moduleName,
@@ -690,6 +731,7 @@ struct SwiftInterfaceBuilder: Sendable {
             if let rendered = renderedCallable(
                 method,
                 protocolNames: protocolNames,
+                knownTypeComponents: knownTypeComponents,
                 level: level + 1,
                 isProtocolRequirement: isProtocol,
                 moduleName: moduleName,
@@ -703,6 +745,7 @@ struct SwiftInterfaceBuilder: Sendable {
             if let rendered = renderedCallable(
                 method,
                 protocolNames: protocolNames,
+                knownTypeComponents: knownTypeComponents,
                 level: level + 1,
                 isProtocolRequirement: isProtocol,
                 moduleName: moduleName,
@@ -769,6 +812,40 @@ struct SwiftInterfaceBuilder: Sendable {
         return ": " + conformances
             .map { cleanedTypeName($0, moduleName: moduleName) }
             .joined(separator: ", ")
+    }
+
+    private func selfAliasedAssociatedTypes(
+        for declaration: Declaration,
+        declarations: [String: Declaration],
+        moduleName: String
+    ) -> [String] {
+        guard declaration.resolvedKind != .protocol else {
+            return []
+        }
+
+        var typealiases: [String] = []
+
+        for conformance in declaration.conformances {
+            let cleanedConformance = cleanedTypeName(conformance, moduleName: moduleName)
+            guard let protocolDeclaration = declarations.values.first(where: {
+                $0.resolvedKind == .protocol
+                    && (
+                        cleanedTypeName($0.fullName, moduleName: moduleName) == cleanedConformance
+                            || simpleName(of: $0.fullName) == cleanedConformance
+                    )
+            }) else {
+                continue
+            }
+
+            for associatedType in protocolDeclaration.associatedTypes where associatedType.name == "PartiallyGenerated" {
+                guard !typealiases.contains(associatedType.name) else {
+                    continue
+                }
+                typealiases.append(associatedType.name)
+            }
+        }
+
+        return typealiases
     }
 
     /// Normalizes conformance lists for declarations and associated types.
@@ -945,40 +1022,64 @@ struct SwiftInterfaceBuilder: Sendable {
     ///
     /// - Parameter declarations: All discovered declarations to scan.
     /// - Returns: An ordered array of module names to import.
-    private func discoveredImports(from declarations: [String: Declaration]) -> [String] {
+    func discoveredExternalModules(
+        from demangledSymbols: [String],
+        moduleName: String
+    ) -> [String] {
+        let declarations = discoverDeclarations(from: demangledSymbols, moduleName: moduleName)
+        let knownTypeComponents = Set(
+            declarations.keys.flatMap { $0.split(separator: ".").map(String.init) }
+        )
+
+        return discoveredImports(
+            from: declarations,
+            knownTypeComponents: knownTypeComponents,
+            moduleName: moduleName
+        )
+    }
+
+    private func discoveredImports(
+        from declarations: [String: Declaration],
+        knownTypeComponents: Set<String>,
+        moduleName: String
+    ) -> [String] {
         var rawFragments: [String] = []
-        for declaration in declarations.values {
+        for declaration in declarations.values.sorted(by: { $0.order < $1.order }) {
             rawFragments.append(contentsOf: declaration.conformances)
-            rawFragments.append(contentsOf: declaration.properties.map(\.rawType))
             rawFragments.append(contentsOf: declaration.initializers.map(\.rawSignature))
             rawFragments.append(contentsOf: declaration.methods.map(\.rawSignature))
             rawFragments.append(contentsOf: declaration.staticMethods.map(\.rawSignature))
+            rawFragments.append(contentsOf: declaration.properties.map(\.rawType))
             rawFragments.append(contentsOf: declaration.enumCases.compactMap(\.rawPayload))
         }
 
         var modules: [String] = []
 
-        func addModule(_ module: String, when condition: Bool) {
-            guard condition, !modules.contains(module) else {
+        func addModule(_ module: String) {
+            guard !modules.contains(module) else {
                 return
             }
             modules.append(module)
         }
 
-        addModule("Foundation", when: rawFragments.contains { $0.contains("Foundation.") || $0.contains("__C.NS") })
-        addModule("Dispatch", when: rawFragments.contains { $0.contains("Dispatch.") })
-        addModule("CoreGraphics", when: rawFragments.contains { $0.contains("CoreGraphics.") || $0.contains("__C.CG") })
-        addModule("QuartzCore", when: rawFragments.contains { $0.contains("QuartzCore.") || $0.contains("__C.CATransform3D") })
-        addModule("UniformTypeIdentifiers", when: rawFragments.contains { $0.contains("UniformTypeIdentifiers.") })
-        addModule("Darwin", when: rawFragments.contains { $0.contains("__C.audit_token_t") || $0.contains("Darwin.") })
-        addModule("IOSurface", when: rawFragments.contains { $0.contains("__C.IOSurfaceRef") || $0.contains("IOSurface.") })
-        addModule("XPC", when: rawFragments.contains { $0.contains("XPC.") })
-        addModule("os", when: rawFragments.contains { $0.contains("os.") })
-        addModule("Observation", when: rawFragments.contains { $0.contains("Observation.") })
-        addModule("BackgroundAssets", when: rawFragments.contains { $0.contains("BackgroundAssets.") })
-        addModule("GenerativeFunctionsFoundation", when: rawFragments.contains { $0.contains("GenerativeFunctionsFoundation.") })
-        // Note: _StringProcessing.Regex is rewritten to Swift.Regex in cleanedTypeName,
-        // so no import is needed for _StringProcessing.
+        for fragment in rawFragments {
+            for module in importedModuleCandidates(
+                in: fragment,
+                knownTypeComponents: knownTypeComponents,
+                moduleName: moduleName
+            ) {
+                addModule(module)
+            }
+
+            let cleanedFragment = cleanedTypeName(fragment, moduleName: moduleName)
+            for module in importedModuleCandidates(
+                in: cleanedFragment,
+                knownTypeComponents: knownTypeComponents,
+                moduleName: moduleName
+            ) {
+                addModule(module)
+            }
+        }
 
         return modules
     }
@@ -1001,6 +1102,7 @@ struct SwiftInterfaceBuilder: Sendable {
     private func renderedCallable(
         _ callable: Declaration.Callable,
         protocolNames: Set<String>,
+        knownTypeComponents: Set<String>,
         level: Int,
         isProtocolRequirement: Bool,
         moduleName: String,
@@ -1011,7 +1113,12 @@ struct SwiftInterfaceBuilder: Sendable {
         guard
             !rawSignature.contains("__allocating_init"),
             !rawSignature.contains(".T =="),
-            !rawSignature.contains("CoreGraphics.Region")
+            !rawSignature.contains("CoreGraphics.Region"),
+            !containsUnrenderableExternalModuleReference(
+                rawSignature,
+                knownTypeComponents: knownTypeComponents,
+                moduleName: moduleName
+            )
         else {
             return nil
         }
@@ -1061,7 +1168,7 @@ struct SwiftInterfaceBuilder: Sendable {
         let effects = rawSignature[rawSignature.index(after: closingParenthesis)..<returnArrow.lowerBound]
             .trimmingCharacters(in: .whitespaces)
         let returnType = String(rawSignature[returnArrow.upperBound...])
-        let renderedArguments = (try? renderedArgumentList(
+        var renderedArguments = (try? renderedArgumentList(
             arguments,
             protocolNames: protocolNames,
             moduleName: moduleName
@@ -1080,6 +1187,10 @@ struct SwiftInterfaceBuilder: Sendable {
         let methodName = genericParsed.name
         let genericParamClause = genericParsed.paramClause
         let whereClause = genericParsed.whereClause
+        renderedArguments = applyingPackExpansionSyntax(
+            to: renderedArguments,
+            packParameters: genericParsed.packParameters
+        )
 
         let accessPrefix = isProtocolRequirement ? "" : "public "
 
@@ -1155,7 +1266,9 @@ struct SwiftInterfaceBuilder: Sendable {
         }
         return cleaned
             .replacingOccurrences(of: "__owned ", with: "")
-            .replacingOccurrences(of: "_StringProcessing.Regex", with: "Swift.Regex")
+            .replacingOccurrences(of: "Swift.Actor", with: "_Concurrency.Actor")
+            .replacingOccurrences(of: "Swift.AsyncIteratorProtocol", with: "_Concurrency.AsyncIteratorProtocol")
+            .replacingOccurrences(of: "Swift.AsyncSequence", with: "_Concurrency.AsyncSequence")
             .replacingOccurrences(of: "__C.CGAffineTransform", with: "CoreGraphics.CGAffineTransform")
             .replacingOccurrences(of: "__C.CGFloat", with: "CoreGraphics.CGFloat")
             .replacingOccurrences(of: "__C.CGPoint", with: "CoreGraphics.CGPoint")
@@ -1171,6 +1284,11 @@ struct SwiftInterfaceBuilder: Sendable {
             .replacingOccurrences(
                 of: #"(?<!\w)A\.([A-Z][0-9]?)(?!\w)"#,
                 with: "$1",
+                options: .regularExpression
+            )
+            .replacingOccurrences(
+                of: #"(?<![\w`])Protocol(?![\w`])"#,
+                with: "`Protocol`",
                 options: .regularExpression
             )
     }
@@ -1359,10 +1477,7 @@ struct SwiftInterfaceBuilder: Sendable {
             return nil
         }
 
-        var owner = String(remainder[..<conformanceSeparator.lowerBound])
-        if let angleBracket = owner.firstIndex(of: "<") {
-            owner = String(owner[..<angleBracket])
-        }
+        let owner = removingGenericArguments(from: String(remainder[..<conformanceSeparator.lowerBound]))
         let conformance = String(remainder[conformanceSeparator.upperBound..<moduleSeparator.lowerBound])
         return (owner, conformance)
     }
@@ -1390,10 +1505,7 @@ struct SwiftInterfaceBuilder: Sendable {
             return nil
         }
 
-        var owner = String(remainder[..<separator.lowerBound])
-        if let angleBracket = owner.firstIndex(of: "<") {
-            owner = String(owner[..<angleBracket])
-        }
+        let owner = removingGenericArguments(from: String(remainder[..<separator.lowerBound]))
         let conformance = String(remainder[separator.upperBound...])
         return (owner, conformance)
     }
@@ -1875,9 +1987,9 @@ struct SwiftInterfaceBuilder: Sendable {
     private func parseGenericClause(
         _ head: String,
         moduleName: String
-    ) -> (name: String, paramClause: String, whereClause: String) {
+    ) -> (name: String, paramClause: String, whereClause: String, packParameters: Set<String>) {
         guard let angleBracketStart = head.firstIndex(of: "<") else {
-            return (name: head, paramClause: "", whereClause: "")
+            return (name: head, paramClause: "", whereClause: "", packParameters: Set<String>())
         }
 
         let name = String(head[..<angleBracketStart])
@@ -1903,16 +2015,29 @@ struct SwiftInterfaceBuilder: Sendable {
                 declaredParams: declaredParams,
                 whereClause: cleanedConstraints
             )
+            let packParameters = packParameterNames(from: declaredParams)
+            let renderedWhereClause = applyingPackExpansionSyntax(
+                toWhereClause: cleanedConstraints,
+                packParameters: packParameters
+            )
 
             return (
                 name: name,
                 paramClause: "<\(declaredParams.joined(separator: ", "))>",
-                whereClause: " where \(cleanedConstraints)"
+                whereClause: " where \(renderedWhereClause)",
+                packParameters: packParameters
             )
         }
 
         let params = genericContent.trimmingCharacters(in: .whitespaces)
-        return (name: name, paramClause: "<\(params)>", whereClause: "")
+        return (
+            name: name,
+            paramClause: "<\(params)>",
+            whereClause: "",
+            packParameters: packParameterNames(from: params.split(separator: ",").map {
+                $0.trimmingCharacters(in: .whitespaces)
+            })
+        )
     }
 
     /// Fixes generic parameter declarations for same-type constraints.
@@ -1989,6 +2114,137 @@ struct SwiftInterfaceBuilder: Sendable {
         let angleBracketStart = searchRange.firstIndex(of: "<")
         let effectiveEnd = angleBracketStart ?? upperBound
         return string[..<effectiveEnd].lastIndex(of: ".")
+    }
+
+    private func packParameterNames(from declaredParams: [String]) -> Set<String> {
+        Set(
+            declaredParams.compactMap { parameter in
+                guard parameter.hasPrefix("each ") else {
+                    return nil
+                }
+                return String(parameter.dropFirst("each ".count)).trimmingCharacters(in: .whitespaces)
+            }
+        )
+    }
+
+    private func applyingPackExpansionSyntax(
+        to string: String,
+        packParameters: Set<String>
+    ) -> String {
+        guard !packParameters.isEmpty else {
+            return string
+        }
+
+        return packParameters.sorted().reduce(string) { result, parameter in
+            let escapedParameter = NSRegularExpression.escapedPattern(for: parameter)
+            return result.replacingOccurrences(
+                of: #"(?<!each )repeat \#(escapedParameter)\b"#,
+                with: "repeat each \(parameter)",
+                options: .regularExpression
+            )
+        }
+    }
+
+    private func applyingPackExpansionSyntax(
+        toWhereClause whereClause: String,
+        packParameters: Set<String>
+    ) -> String {
+        guard !packParameters.isEmpty else {
+            return whereClause
+        }
+
+        return packParameters.sorted().reduce(whereClause) { result, parameter in
+            let escapedParameter = NSRegularExpression.escapedPattern(for: parameter)
+            return result.replacingOccurrences(
+                of: #"\b\#(escapedParameter)\s*:"#,
+                with: "repeat each \(parameter) :",
+                options: .regularExpression
+            )
+        }
+    }
+
+    private func removingGenericArguments(from string: String) -> String {
+        var result = ""
+        var depth = 0
+        var previousCharacter: Character?
+
+        for character in string {
+            switch character {
+            case "<":
+                if previousCharacter != "-" {
+                    depth += 1
+                }
+            case ">":
+                if previousCharacter != "-" && depth > 0 {
+                    depth -= 1
+                }
+            default:
+                if depth == 0 {
+                    result.append(character)
+                }
+            }
+
+            previousCharacter = character
+        }
+
+        return result.trimmingCharacters(in: .whitespaces)
+    }
+
+    private func containsUnresolvedAssociatedTypeReference(_ string: String) -> Bool {
+        string.range(
+            of: #"\b[A-Z][0-9]*\.[A-Z][A-Za-z0-9_]*\b"#,
+            options: .regularExpression
+        ) != nil
+    }
+
+    private func containsUnrenderableExternalModuleReference(
+        _ string: String,
+        knownTypeComponents: Set<String>,
+        moduleName: String
+    ) -> Bool {
+        guard let renderableExternalModules else {
+            return false
+        }
+
+        let allowedPrefixes = knownTypeComponents
+            .union(renderableExternalModules)
+            .union(["Swift", "__C", moduleName])
+
+        return moduleLikePrefixes(in: string).contains { prefix in
+            !allowedPrefixes.contains(prefix)
+        }
+    }
+
+    private func importedModuleCandidates(
+        in string: String,
+        knownTypeComponents: Set<String>,
+        moduleName: String
+    ) -> [String] {
+        moduleLikePrefixes(in: string)
+            .filter { prefix in
+                prefix != "Swift"
+                    && prefix != "__C"
+                    && prefix != moduleName
+                    && !knownTypeComponents.contains(prefix)
+            }
+            .filter { prefix in
+                renderableExternalModules?.contains(prefix) ?? true
+            }
+            .sorted()
+    }
+
+    private func moduleLikePrefixes(in string: String) -> Set<String> {
+        guard let regex = try? NSRegularExpression(pattern: #"\b([A-Z_][A-Za-z0-9_]{1,}|os)\."#) else {
+            return []
+        }
+
+        let nsString = string as NSString
+        let range = NSRange(location: 0, length: nsString.length)
+        return Set(
+            regex.matches(in: string, range: range).map {
+                nsString.substring(with: $0.range(at: 1))
+            }
+        )
     }
 
     private func extractedTypeName(from line: String, prefix: String) -> String? {
@@ -2290,6 +2546,7 @@ struct SwiftInterfaceBuilder: Sendable {
         "internal",
         "let",
         "operator",
+        "Protocol",
         "private",
         "protocol",
         "public",

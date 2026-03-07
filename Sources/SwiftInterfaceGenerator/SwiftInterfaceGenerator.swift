@@ -45,7 +45,7 @@ import Foundation
 public struct SwiftInterfaceGenerator: Sendable {
     private let commandRunner: any CommandRunning
     private let compilerVersionProvider: (@Sendable () async throws -> String)?
-    private let builder = SwiftInterfaceBuilder()
+    private let utilityBuilder = SwiftInterfaceBuilder()
 
     /// Creates a new generator with the default configuration.
     public init() {
@@ -90,7 +90,7 @@ public struct SwiftInterfaceGenerator: Sendable {
         repositoryRootURL: URL,
         targetTriple: String
     ) async throws -> GeneratedSwiftInterface {
-        let moduleName = builder.normalizedModuleName(for: frameworkBinaryURL)
+        let moduleName = utilityBuilder.normalizedModuleName(for: frameworkBinaryURL)
         let outputRootURL = repositoryRootURL
             .standardizedFileURL
             .appendingPathComponent("tmp_module", isDirectory: true)
@@ -98,14 +98,20 @@ public struct SwiftInterfaceGenerator: Sendable {
         let moduleDirectoryURL = outputRootURL
             .appendingPathComponent("\(moduleName).swiftmodule", isDirectory: true)
         let interfaceURL = moduleDirectoryURL
-            .appendingPathComponent(builder.swiftinterfaceFilename(for: targetTriple))
+            .appendingPathComponent(utilityBuilder.swiftinterfaceFilename(for: targetTriple))
 
         try? FileManager.default.removeItem(at: moduleDirectoryURL)
         try FileManager.default.createDirectory(at: moduleDirectoryURL, withIntermediateDirectories: true)
 
         let demangledSymbols = try await loadDemangledSymbols(frameworkBinaryURL: normalizedFrameworkBinaryURL)
         let compilerVersion = try await loadCompilerVersion()
-        let interface = builder.makeInterface(
+        let renderableExternalModules = try await loadRenderableExternalModules(
+            demangledSymbols: demangledSymbols,
+            moduleName: moduleName,
+            targetTriple: targetTriple
+        )
+        let renderingBuilder = SwiftInterfaceBuilder(renderableExternalModules: renderableExternalModules)
+        let interface = renderingBuilder.makeInterface(
             demangledSymbols: demangledSymbols,
             targetTriple: targetTriple,
             moduleName: moduleName,
@@ -203,5 +209,105 @@ public struct SwiftInterfaceGenerator: Sendable {
         }
 
         return "Apple Swift"
+    }
+
+    private func loadRenderableExternalModules(
+        demangledSymbols: [String],
+        moduleName: String,
+        targetTriple: String
+    ) async throws -> Set<String> {
+        let candidateModules = utilityBuilder.discoveredExternalModules(
+            from: demangledSymbols,
+            moduleName: moduleName
+        )
+
+        guard !candidateModules.isEmpty else {
+            return []
+        }
+
+        guard let sdkIdentifier = sdkIdentifier(for: targetTriple) else {
+            return Set(candidateModules)
+        }
+
+        var renderableModules: Set<String> = []
+        for module in candidateModules {
+            if try await canImport(
+                module: module,
+                sdkIdentifier: sdkIdentifier,
+                targetTriple: targetTriple
+            ) {
+                renderableModules.insert(module)
+            }
+        }
+
+        return renderableModules
+    }
+
+    private func canImport(
+        module: String,
+        sdkIdentifier: String,
+        targetTriple: String
+    ) async throws -> Bool {
+        let probeRootURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("SwiftInterfaceGeneratorModuleProbe-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: probeRootURL, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: probeRootURL)
+        }
+
+        let sourceURL = probeRootURL.appendingPathComponent("Probe.swift")
+        let moduleCacheURL = probeRootURL.appendingPathComponent("ModuleCache", isDirectory: true)
+        try FileManager.default.createDirectory(at: moduleCacheURL, withIntermediateDirectories: true)
+        try "import \(module)\n".write(to: sourceURL, atomically: true, encoding: .utf8)
+
+        do {
+            _ = try await commandRunner.run(
+                executable: "xcrun",
+                arguments: [
+                    "--sdk", sdkIdentifier,
+                    "swiftc",
+                    "-swift-version", "6",
+                    "-typecheck",
+                    "-target", targetTriple,
+                    "-module-cache-path", moduleCacheURL.path,
+                    sourceURL.path,
+                ],
+                stdin: nil
+            )
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    private func sdkIdentifier(for targetTriple: String) -> String? {
+        if targetTriple.contains("macosx") {
+            return "macosx"
+        }
+        if targetTriple.contains("ios"), targetTriple.contains("simulator") {
+            return "iphonesimulator"
+        }
+        if targetTriple.contains("ios") {
+            return "iphoneos"
+        }
+        if targetTriple.contains("tvos"), targetTriple.contains("simulator") {
+            return "appletvsimulator"
+        }
+        if targetTriple.contains("tvos") {
+            return "appletvos"
+        }
+        if targetTriple.contains("watchos"), targetTriple.contains("simulator") {
+            return "watchsimulator"
+        }
+        if targetTriple.contains("watchos") {
+            return "watchos"
+        }
+        if targetTriple.contains("xros"), targetTriple.contains("simulator") {
+            return "xrsimulator"
+        }
+        if targetTriple.contains("xros") {
+            return "xros"
+        }
+        return nil
     }
 }

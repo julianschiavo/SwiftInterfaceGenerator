@@ -73,6 +73,22 @@ func cleanedTypeNameRewritesModulePrefixesAndCBridges() {
         utilityBuilder.cleanedTypeName("__C.audit_token_t")
             == "Darwin.audit_token_t"
     )
+    #expect(
+        utilityBuilder.cleanedTypeName("_StringProcessing.Regex<(Swift.String)>")
+            == "_StringProcessing.Regex<(Swift.String)>"
+    )
+    #expect(
+        utilityBuilder.cleanedTypeName("Swift.Actor")
+            == "_Concurrency.Actor"
+    )
+    #expect(
+        utilityBuilder.cleanedTypeName("Swift.AsyncIteratorProtocol")
+            == "_Concurrency.AsyncIteratorProtocol"
+    )
+    #expect(
+        utilityBuilder.cleanedTypeName("Swift.AsyncSequence")
+            == "_Concurrency.AsyncSequence"
+    )
 }
 
 @Test
@@ -90,6 +106,7 @@ func renderedTypeNameUsesExistentialsForProtocolsAndOptionalProtocols() {
 @Test
 func escapedIdentifierEscapesSwiftKeywords() {
     #expect(utilityBuilder.escapedIdentifier("class") == "`class`")
+    #expect(utilityBuilder.escapedIdentifier("Protocol") == "`Protocol`")
     #expect(utilityBuilder.escapedIdentifier("value") == "value")
 }
 
