@@ -23,6 +23,34 @@ struct CompiledFrameworkFixture {
 }
 
 struct IntegrationTestCompiler {
+    private static let cachedSDKPath: String = {
+        let process = Process()
+        let pipe = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
+        process.arguments = ["--sdk", "macosx", "--show-sdk-path"]
+        process.standardOutput = pipe
+        try! process.run()
+        process.waitUntilExit()
+        return String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)!
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }()
+
+    private static let cachedTargetTriple: String = {
+        let process = Process()
+        let pipe = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
+        process.arguments = ["--sdk", "macosx", "swiftc", "-print-target-info"]
+        process.standardOutput = pipe
+        try! process.run()
+        process.waitUntilExit()
+        let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)!
+        struct TargetInfo: Decodable {
+            struct Target: Decodable { let triple: String }
+            let target: Target
+        }
+        return try! JSONDecoder().decode(TargetInfo.self, from: Data(output.utf8)).target.triple
+    }()
+
     func compileFramework(
         moduleName: String,
         sources: [String: String]
@@ -45,9 +73,8 @@ struct IntegrationTestCompiler {
             return sourceURL
         }.sorted { $0.lastPathComponent < $1.lastPathComponent }
 
-        let sdkPath = try run("/usr/bin/xcrun", arguments: ["--sdk", "macosx", "--show-sdk-path"]).stdout
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let targetTriple = try hostTargetTriple()
+        let sdkPath = Self.cachedSDKPath
+        let targetTriple = Self.cachedTargetTriple
         let moduleOutputURL = moduleDirectoryURL.appendingPathComponent("\(moduleName).swiftmodule")
 
         _ = try run(
@@ -78,24 +105,6 @@ struct IntegrationTestCompiler {
             commandRunner: SubprocessCommandRunner(),
             compilerVersionProvider: { "Integration Test Swift" }
         )
-    }
-
-    private func hostTargetTriple() throws -> String {
-        let output = try run(
-            "/usr/bin/xcrun",
-            arguments: ["--sdk", "macosx", "swiftc", "-print-target-info"]
-        ).stdout
-
-        struct TargetInfo: Decodable {
-            struct Target: Decodable {
-                let triple: String
-            }
-
-            let target: Target
-        }
-
-        let data = Data(output.utf8)
-        return try JSONDecoder().decode(TargetInfo.self, from: data).target.triple
     }
 
     private func run(

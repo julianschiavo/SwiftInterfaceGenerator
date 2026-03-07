@@ -103,10 +103,8 @@ public struct SwiftInterfaceGenerator: Sendable {
         try? FileManager.default.removeItem(at: moduleDirectoryURL)
         try FileManager.default.createDirectory(at: moduleDirectoryURL, withIntermediateDirectories: true)
 
-        async let demangledSymbolsTask = loadDemangledSymbols(frameworkBinaryURL: normalizedFrameworkBinaryURL)
-        async let compilerVersionTask = loadCompilerVersion()
-        let demangledSymbols = try await demangledSymbolsTask
-        let compilerVersion = try await compilerVersionTask
+        let demangledSymbols = try await loadDemangledSymbols(frameworkBinaryURL: normalizedFrameworkBinaryURL)
+        let compilerVersion = try await loadCompilerVersion()
         let renderableExternalModules = try await loadRenderableExternalModules(
             demangledSymbols: demangledSymbols,
             moduleName: moduleName,
