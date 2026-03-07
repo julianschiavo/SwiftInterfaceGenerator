@@ -20,9 +20,17 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Cache SwiftPM Shared Cache
+        uses: actions/cache@v4
+        with:
+          path: .swiftpm-cache
+          key: ${{ runner.os }}-swiftpm-cache-${{ hashFiles('Package.swift', 'Package.resolved') }}
+          restore-keys: |
+            ${{ runner.os }}-swiftpm-cache-
+
       - name: Build documentation
         run: |
-          swift package --allow-writing-to-package-directory generate-documentation \
+          swift package --cache-path .swiftpm-cache --allow-writing-to-package-directory generate-documentation \
             --target SwiftInterfaceGenerator \
             --disable-indexing \
             --transform-for-static-hosting \
