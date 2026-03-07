@@ -565,14 +565,31 @@ struct CallableTests {
     }
 
     @Test
-    func allocatingInitIsFiltered() {
-        #expect(
-            builder.parseCallable(
-                from: "Sample.Record.__allocating_init() -> Sample.Record",
-                isStatic: false,
-                moduleName: "Sample"
-            ) == nil
+    func allocatingInitIsNormalizedToInit() {
+        let result = builder.parseCallable(
+            from: "Sample.Record.__allocating_init() -> Sample.Record",
+            isStatic: false,
+            moduleName: "Sample"
         )
+        #expect(result?.owner == "Record")
+        #expect(result?.rawSignature == "init() -> Sample.Record")
+        #expect(result?.isInitializer == true)
+    }
+
+    @Test
+    func sameModuleConcreteExtensionMethodIsParsed() {
+        let result = builder.parseCallable(
+            from: "static (extension in Sample):Sample.GenerationGuide<A where A == Swift.String>.anyOf([Swift.String]) -> Sample.GenerationGuide<Swift.String>",
+            isStatic: true,
+            moduleName: "Sample",
+            allowExtensionMembersOn: ["GenerationGuide"]
+        )
+        #expect(result?.owner == "GenerationGuide")
+        #expect(
+            result?.rawSignature
+                == "anyOf([Swift.String]) -> Sample.GenerationGuide<Swift.String> where A == Swift.String"
+        )
+        #expect(result?.isInitializer == false)
     }
 
     @Test

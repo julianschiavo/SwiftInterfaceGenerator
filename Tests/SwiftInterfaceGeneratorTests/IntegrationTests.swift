@@ -1619,6 +1619,48 @@ struct IntegrationTests {
         )
     }
 
+    @Test
+    func constrainedExtensionMethodsOnGenericType() async throws {
+        let fixture = try integrationCompiler.compileFramework(
+            moduleName: "ConstrainedExtensionFixture",
+            sources: [
+                "ConstrainedExtensionFixture.swift": """
+                public struct GenerationGuide<A> {}
+
+                public extension GenerationGuide where A == String {
+                    static func anyOf(_ choices: [String]) -> GenerationGuide<String> {
+                        GenerationGuide<String>()
+                    }
+                }
+
+                public extension GenerationGuide where A == Int {
+                    static func minimum(_ value: Int) -> GenerationGuide<Int> {
+                        GenerationGuide<Int>()
+                    }
+                }
+                """
+            ]
+        )
+        let contents = try await generateInterface(fixture: fixture)
+
+        #expect(
+            normalizedInterface(contents)
+                == normalizedInterface(
+                    """
+                // swift-interface-format-version: 1.0
+                // swift-compiler-version: Integration Test Swift
+                // swift-module-flags: -target \(fixture.targetTriple) -enable-library-evolution -module-name ConstrainedExtensionFixture
+                import Swift
+
+                public struct GenerationGuide<A> {
+                  public static func anyOf(_: [Swift.String]) -> GenerationGuide<Swift.String> where A == Swift.String
+                  public static func minimum(_: Swift.Int) -> GenerationGuide<Swift.Int> where A == Swift.Int
+                }
+                """
+                )
+        )
+    }
+
     // MARK: - Helpers
 
     private func generateInterface(fixture: CompiledFrameworkFixture) async throws -> String {

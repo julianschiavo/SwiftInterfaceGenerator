@@ -224,6 +224,14 @@ struct SwiftInterfaceBuilder: Sendable {
         moduleName: String
     ) -> [String: Declaration] {
         var declarations: [String: Declaration] = [:]
+        let concreteTypeNames = Set(
+            demangledSymbols.compactMap {
+                extractedTypeName(
+                    from: $0,
+                    prefix: "nominal type descriptor for \(moduleName)."
+                )
+            }
+        )
 
         func declaration(named fullName: String, order: Int) -> Declaration {
             declarations[fullName] ?? Declaration(fullName: fullName, order: order)
@@ -402,7 +410,12 @@ struct SwiftInterfaceBuilder: Sendable {
                 continue
             }
 
-            if let callable = parseCallable(from: line, isStatic: true, moduleName: moduleName) {
+            if let callable = parseCallable(
+                from: line,
+                isStatic: true,
+                moduleName: moduleName,
+                allowExtensionMembersOn: concreteTypeNames
+            ) {
                 var value = declaration(named: callable.owner, order: order)
                 if callable.isInitializer {
                     value.addInitializer(
@@ -427,7 +440,12 @@ struct SwiftInterfaceBuilder: Sendable {
                 continue
             }
 
-            if let callable = parseCallable(from: line, isStatic: false, moduleName: moduleName) {
+            if let callable = parseCallable(
+                from: line,
+                isStatic: false,
+                moduleName: moduleName,
+                allowExtensionMembersOn: concreteTypeNames
+            ) {
                 var value = declaration(named: callable.owner, order: order)
                 if callable.isInitializer {
                     value.addInitializer(
@@ -953,6 +971,7 @@ struct SwiftInterfaceBuilder: Sendable {
             "some",
             "static",
             "throws",
+            "where",
         ]
         if !moduleName.isEmpty {
             excludedTokens.insert(moduleName)
@@ -1111,7 +1130,6 @@ struct SwiftInterfaceBuilder: Sendable {
         let indent = String(repeating: "  ", count: level)
         let rawSignature = callable.rawSignature
         guard
-            !rawSignature.contains("__allocating_init"),
             !rawSignature.contains(".T =="),
             !rawSignature.contains("CoreGraphics.Region"),
             !containsUnrenderableExternalModuleReference(
@@ -1167,7 +1185,8 @@ struct SwiftInterfaceBuilder: Sendable {
         let arguments = String(rawSignature[rawSignature.index(after: openingParenthesis)..<closingParenthesis])
         let effects = rawSignature[rawSignature.index(after: closingParenthesis)..<returnArrow.lowerBound]
             .trimmingCharacters(in: .whitespaces)
-        let returnType = String(rawSignature[returnArrow.upperBound...])
+        let rawReturnSection = String(rawSignature[returnArrow.upperBound...])
+        let (returnType, trailingWhereClause) = splitTrailingWhereClause(from: rawReturnSection)
         var renderedArguments = (try? renderedArgumentList(
             arguments,
             protocolNames: protocolNames,
@@ -1186,7 +1205,10 @@ struct SwiftInterfaceBuilder: Sendable {
         let genericParsed = parseGenericClause(head, moduleName: moduleName)
         let methodName = genericParsed.name
         let genericParamClause = genericParsed.paramClause
-        let whereClause = genericParsed.whereClause
+        let whereClause = combinedWhereClause(
+            genericParsed.whereClause,
+            trailingWhereClause
+        )
         renderedArguments = applyingPackExpansionSyntax(
             to: renderedArguments,
             packParameters: genericParsed.packParameters
@@ -1856,21 +1878,35 @@ struct SwiftInterfaceBuilder: Sendable {
     func parseCallable(
         from line: String,
         isStatic: Bool,
-        moduleName: String
+        moduleName: String,
+        allowExtensionMembersOn allowedExtensionOwners: Set<String> = []
     ) -> (owner: String, rawSignature: String, isInitializer: Bool)? {
-        let prefix = isStatic ? "static \(moduleName)." : "\(moduleName)."
-        guard line.hasPrefix(prefix) else {
+        let staticPrefix = isStatic ? "static " : ""
+        guard line.hasPrefix(staticPrefix) else {
             return nil
         }
 
-        let remainder = String(line.dropFirst(prefix.count))
+        var remainder = String(line.dropFirst(staticPrefix.count))
+        let extensionPrefix = "(extension in \(moduleName)):"
+        let isExtensionMember: Bool
+        if remainder.hasPrefix(extensionPrefix) {
+            isExtensionMember = true
+            remainder.removeFirst(extensionPrefix.count)
+        } else {
+            isExtensionMember = false
+        }
+
+        let modulePrefix = "\(moduleName)."
+        guard remainder.hasPrefix(modulePrefix) else {
+            return nil
+        }
+        remainder.removeFirst(modulePrefix.count)
         guard
             !remainder.contains(".getter :"),
             !remainder.contains(".setter :"),
             !remainder.contains(".modify :"),
             !remainder.contains(".__deallocating_deinit"),
             !remainder.contains(".deinit"),
-            !remainder.contains("__allocating_init"),
             !remainder.contains(" infix"),
             !remainder.contains("prefix "),
             !remainder.contains("postfix "),
@@ -1880,9 +1916,27 @@ struct SwiftInterfaceBuilder: Sendable {
             return nil
         }
 
-        let owner = String(remainder[..<memberSeparator])
-        let rawSignature = String(remainder[remainder.index(after: memberSeparator)...])
-        return (owner, rawSignature, rawSignature.hasPrefix("init(") || rawSignature.hasPrefix("init<"))
+        let ownerPath = String(remainder[..<memberSeparator])
+        let owner = removingGenericArguments(from: ownerPath)
+        if isExtensionMember, !allowedExtensionOwners.contains(owner) {
+            return nil
+        }
+
+        var rawSignature = String(remainder[remainder.index(after: memberSeparator)...])
+        if rawSignature.hasPrefix("__allocating_init") {
+            rawSignature = "init" + rawSignature.dropFirst("__allocating_init".count)
+        }
+
+        let extensionConstraintClause = isExtensionMember
+            ? cleanedExtensionConstraintClause(from: ownerPath, moduleName: moduleName)
+            : ""
+        rawSignature += extensionConstraintClause
+
+        return (
+            owner,
+            rawSignature,
+            rawSignature.hasPrefix("init(") || rawSignature.hasPrefix("init<")
+        )
     }
 
     /// Parses a dispatch thunk symbol line (used for open class methods).
@@ -2110,10 +2164,33 @@ struct SwiftInterfaceBuilder: Sendable {
     ///   - before: The upper bound index (typically the first `(`).
     /// - Returns: The index of the owner/member separator dot, or `nil` if none exists.
     private func memberDotIndex(in string: String, before upperBound: String.Index) -> String.Index? {
-        let searchRange = string[..<upperBound]
-        let angleBracketStart = searchRange.firstIndex(of: "<")
-        let effectiveEnd = angleBracketStart ?? upperBound
-        return string[..<effectiveEnd].lastIndex(of: ".")
+        var lastDot: String.Index?
+        var depth = 0
+        var previousCharacter: Character?
+        var index = string.startIndex
+
+        while index < upperBound {
+            let character = string[index]
+            switch character {
+            case "<":
+                if previousCharacter != "-" {
+                    depth += 1
+                }
+            case ">":
+                if previousCharacter != "-" && depth > 0 {
+                    depth -= 1
+                }
+            case "." where depth == 0:
+                lastDot = index
+            default:
+                break
+            }
+
+            previousCharacter = character
+            index = string.index(after: index)
+        }
+
+        return lastDot
     }
 
     private func packParameterNames(from declaredParams: [String]) -> Set<String> {
@@ -2188,6 +2265,68 @@ struct SwiftInterfaceBuilder: Sendable {
         }
 
         return result.trimmingCharacters(in: .whitespaces)
+    }
+
+    private func cleanedExtensionConstraintClause(
+        from ownerPath: String,
+        moduleName: String
+    ) -> String {
+        guard
+            let angleBracketStart = ownerPath.firstIndex(of: "<"),
+            let angleBracketEnd = matchingClosingDelimiter(
+                in: ownerPath,
+                from: angleBracketStart,
+                open: "<",
+                close: ">"
+            )
+        else {
+            return ""
+        }
+
+        let genericClause = ownerPath[ownerPath.index(after: angleBracketStart)..<angleBracketEnd]
+        guard let whereRange = genericClause.range(of: " where ") else {
+            return ""
+        }
+
+        let rawConstraints = String(genericClause[whereRange.upperBound...])
+            .trimmingCharacters(in: .whitespaces)
+        let cleanedConstraints = cleanedTypeName(rawConstraints, moduleName: moduleName)
+            .replacingOccurrences(
+                of: #"(\w):\s*"#,
+                with: "$1 : ",
+                options: .regularExpression
+            )
+
+        return cleanedConstraints.isEmpty ? "" : " where \(cleanedConstraints)"
+    }
+
+    private func splitTrailingWhereClause(from returnSection: String) -> (returnType: String, whereClause: String) {
+        guard let whereRange = returnSection.range(of: " where ", options: .backwards) else {
+            return (returnSection, "")
+        }
+
+        return (
+            String(returnSection[..<whereRange.lowerBound]).trimmingCharacters(in: .whitespaces),
+            String(returnSection[whereRange.lowerBound...]).trimmingCharacters(in: .whitespaces)
+        )
+    }
+
+    private func combinedWhereClause(_ lhs: String, _ rhs: String) -> String {
+        let lhsConstraints = lhs.replacingOccurrences(of: #"^\s*where\s+"#, with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespaces)
+        let rhsConstraints = rhs.replacingOccurrences(of: #"^\s*where\s+"#, with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespaces)
+
+        switch (lhsConstraints.isEmpty, rhsConstraints.isEmpty) {
+        case (true, true):
+            return ""
+        case (false, true):
+            return " where \(lhsConstraints)"
+        case (true, false):
+            return " where \(rhsConstraints)"
+        case (false, false):
+            return " where \(lhsConstraints), \(rhsConstraints)"
+        }
     }
 
     private func containsUnresolvedAssociatedTypeReference(_ string: String) -> Bool {

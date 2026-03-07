@@ -551,6 +551,25 @@ struct MakeInterfaceTests {
     }
 
     @Test
+    func classWithOnlyAllocatingInitStillRendersInitializer() {
+        let interface = renderingBuilder.makeInterface(
+            demangledSymbols: [
+                "nominal type descriptor for Mod.Session",
+                "metaclass for Mod.Session",
+                "Mod.Session.__allocating_init(model: Mod.Model) -> Mod.Session",
+            ],
+            targetTriple: "arm64-apple-macosx15.0",
+            moduleName: "Mod",
+            compilerVersion: "Test"
+        )
+
+        let norm = normalizedInterface(interface)
+        #expect(norm.contains("public final class Session"))
+        #expect(norm.contains("public init(model: Model)"))
+        #expect(!norm.contains("__allocating_init"))
+    }
+
+    @Test
     func deinitFilteredOut() {
         let interface = renderingBuilder.makeInterface(
             demangledSymbols: [
@@ -1336,6 +1355,25 @@ struct ComplexRenderingTests {
         #expect(norm.contains("static func element<A1>"))
         // The where clause should still reference A (parent) and A1 (method)
         #expect(norm.contains("where A == [A1]"))
+    }
+
+    @Test
+    func sameModuleConstrainedExtensionMethodsRenderOnConcreteType() {
+        let interface = renderingBuilder.makeInterface(
+            demangledSymbols: [
+                "nominal type descriptor for Mod.GenerationGuide",
+                "static (extension in Mod):Mod.GenerationGuide<A where A == Swift.String>.anyOf([Swift.String]) -> Mod.GenerationGuide<Swift.String>",
+                "static (extension in Mod):Mod.GenerationGuide<A where A == Swift.Int>.minimum(Swift.Int) -> Mod.GenerationGuide<Swift.Int>",
+            ],
+            targetTriple: "arm64-apple-macosx15.0",
+            moduleName: "Mod",
+            compilerVersion: "Test"
+        )
+
+        let norm = normalizedInterface(interface)
+        #expect(norm.contains("public struct GenerationGuide<A>"))
+        #expect(norm.contains("public static func anyOf(_: [Swift.String]) -> GenerationGuide<Swift.String> where A == Swift.String"))
+        #expect(norm.contains("public static func minimum(_: Swift.Int) -> GenerationGuide<Swift.Int> where A == Swift.Int"))
     }
 
     @Test
