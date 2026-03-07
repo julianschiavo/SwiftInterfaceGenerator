@@ -208,17 +208,6 @@ struct SwiftInterfaceBuilder: Sendable {
         )
     }
 
-    /// Iterates over demangled symbols and builds a dictionary of discovered declarations.
-    ///
-    /// Each symbol line is matched against known patterns (nominal type descriptors, protocol
-    /// descriptors, metaclass markers, property descriptors, enum cases, method signatures,
-    /// dispatch thunks, etc.) to populate the declaration model.
-    ///
-    /// - Parameters:
-    ///   - demangledSymbols: The demangled symbol lines to scan.
-    ///   - moduleName: The module name used to match symbol prefixes.
-    /// - Returns: A dictionary keyed by fully-qualified type name, containing the
-    ///   discovered ``Declaration`` for each type.
     /// A sorted array of symbols that supports efficient prefix-matching via binary search.
     struct SortedSymbols {
         let sorted: [String]
@@ -242,6 +231,17 @@ struct SwiftInterfaceBuilder: Sendable {
         }
     }
 
+    /// Iterates over demangled symbols and builds a dictionary of discovered declarations.
+    ///
+    /// Each symbol line is matched against known patterns (nominal type descriptors, protocol
+    /// descriptors, metaclass markers, property descriptors, enum cases, method signatures,
+    /// dispatch thunks, etc.) to populate the declaration model.
+    ///
+    /// - Parameters:
+    ///   - demangledSymbols: The demangled symbol lines to scan.
+    ///   - moduleName: The module name used to match symbol prefixes.
+    /// - Returns: A dictionary keyed by fully-qualified type name, containing the
+    ///   discovered ``Declaration`` for each type.
     private func discoverDeclarations(
         from demangledSymbols: [String],
         moduleName: String
@@ -1035,14 +1035,16 @@ struct SwiftInterfaceBuilder: Sendable {
         return tokens
     }
 
-    /// Discovers which system modules need to be imported based on type references.
+    /// Discovers which external modules are referenced in the demangled symbols.
     ///
-    /// Scans all conformances, property types, method signatures, and enum payloads for
-    /// references to known system modules (Foundation, CoreGraphics, Dispatch, etc.) and
-    /// returns the set of required import statements.
+    /// Builds intermediate declarations from the symbols, then scans all conformances,
+    /// property types, method signatures, and enum payloads for references to external
+    /// modules (Foundation, CoreGraphics, Dispatch, etc.).
     ///
-    /// - Parameter declarations: All discovered declarations to scan.
-    /// - Returns: An ordered array of module names to import.
+    /// - Parameters:
+    ///   - demangledSymbols: The demangled symbol lines to scan.
+    ///   - moduleName: The module name used to match symbol prefixes.
+    /// - Returns: An ordered array of external module names referenced by the symbols.
     func discoveredExternalModules(
         from demangledSymbols: [String],
         moduleName: String
@@ -1266,16 +1268,6 @@ struct SwiftInterfaceBuilder: Sendable {
         }.joined(separator: ", ")
     }
 
-    /// Cleans a raw demangled type name for use in a `.swiftinterface` file.
-    ///
-    /// Removes the current module prefix, strips `__owned` annotations, and rewrites
-    /// Objective-C bridged type names (`__C.CGRect`, `__C.NSCoder`, etc.) to their
-    /// Swift-native equivalents (`CoreGraphics.CGRect`, `Foundation.NSCoder`).
-    ///
-    /// - Parameters:
-    ///   - rawTypeName: The raw type name from demangled output.
-    ///   - moduleName: The current module name to strip (defaults to empty).
-    /// - Returns: The cleaned type name suitable for a `.swiftinterface` file.
     private static let genericExcludedTokens: Set<String> = [
         "Any", "AnyObject", "Bool", "Data", "Date", "Decoder", "Double",
         "Encoder", "Error", "Float", "Hasher", "IndexPath", "Int", "Int32",
@@ -1303,6 +1295,16 @@ struct SwiftInterfaceBuilder: Sendable {
         ("__C.audit_token_t", "Darwin.audit_token_t"),
     ]
 
+    /// Cleans a raw demangled type name for use in a `.swiftinterface` file.
+    ///
+    /// Removes the current module prefix, strips `__owned` annotations, and rewrites
+    /// Objective-C bridged type names (`__C.CGRect`, `__C.NSCoder`, etc.) to their
+    /// Swift-native equivalents (`CoreGraphics.CGRect`, `Foundation.NSCoder`).
+    ///
+    /// - Parameters:
+    ///   - rawTypeName: The raw type name from demangled output.
+    ///   - moduleName: The current module name to strip (defaults to empty).
+    /// - Returns: The cleaned type name suitable for a `.swiftinterface` file.
     func cleanedTypeName(
         _ rawTypeName: String,
         moduleName: String = ""
@@ -1619,7 +1621,7 @@ struct SwiftInterfaceBuilder: Sendable {
     ///
     /// - Parameters:
     ///   - line: The demangled symbol line to parse.
-    ///   - demangledSymbols: The full list of demangled symbols (for getter/setter detection).
+    ///   - sortedSymbols: Sorted symbols for efficient getter/setter detection via prefix search.
     ///   - moduleName: The module name prefix to match.
     /// - Returns: A tuple of property metadata, or `nil` if the line doesn't match.
     func parsePropertyDescriptor(
@@ -1679,7 +1681,7 @@ struct SwiftInterfaceBuilder: Sendable {
     ///
     /// - Parameters:
     ///   - line: The demangled symbol line to parse.
-    ///   - demangledSymbols: The full list of demangled symbols (for getter/setter detection).
+    ///   - sortedSymbols: Sorted symbols for efficient getter/setter detection via prefix search.
     ///   - moduleName: The module name prefix to match.
     /// - Returns: A tuple of subscript metadata, or `nil` if the line doesn't match.
     func parseSubscriptDescriptor(
@@ -1834,7 +1836,7 @@ struct SwiftInterfaceBuilder: Sendable {
     ///
     /// - Parameters:
     ///   - line: The demangled symbol line to parse.
-    ///   - demangledSymbols: The full list of demangled symbols (for setter detection).
+    ///   - sortedSymbols: Sorted symbols for efficient setter detection via prefix search.
     ///   - moduleName: The module name prefix to match.
     /// - Returns: A tuple of property metadata, or `nil` if the line doesn't match.
     func parseProtocolPropertyDescriptor(
@@ -2028,12 +2030,6 @@ struct SwiftInterfaceBuilder: Sendable {
         )
     }
 
-    /// Extracts a type name from a symbol line by stripping a known prefix.
-    ///
-    /// - Parameters:
-    ///   - line: The demangled symbol line.
-    ///   - prefix: The prefix to strip (e.g. `"nominal type descriptor for Module."`).
-    /// - Returns: The type name after the prefix, or `nil` if the line doesn't match.
     /// Extracts only the type-bearing portion of a method signature, excluding the method name.
     ///
     /// For `"makeIterator() -> Stream<A>.Iterator"`, returns `"() -> Stream<A>.Iterator"`.
@@ -2530,6 +2526,12 @@ struct SwiftInterfaceBuilder: Sendable {
         character.isLetter || character.isNumber || character == "_"
     }
 
+    /// Extracts a type name from a symbol line by stripping a known prefix.
+    ///
+    /// - Parameters:
+    ///   - line: The demangled symbol line.
+    ///   - prefix: The prefix to strip (e.g. `"nominal type descriptor for Module."`).
+    /// - Returns: The type name after the prefix, or `nil` if the line doesn't match.
     private func extractedTypeName(from line: String, prefix: String) -> String? {
         guard line.hasPrefix(prefix) else {
             return nil
