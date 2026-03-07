@@ -908,6 +908,22 @@ struct RenderedTypeNameTests {
             builder.renderedTypeName("Sample.Record", protocolNames: [], moduleName: "Sample") == "Record"
         )
     }
+
+    @Test
+    func nestedProtocolTypesGetAnyPrefix() {
+        #expect(
+            builder.renderedTypeName(
+                "Swift.KeyValuePairs<Swift.String, ConvertibleToGeneratedContent>",
+                protocolNames: ["ConvertibleToGeneratedContent"]
+            ) == "Swift.KeyValuePairs<Swift.String, any ConvertibleToGeneratedContent>"
+        )
+        #expect(
+            builder.renderedTypeName(
+                "(Swift.String, ConvertibleToGeneratedContent)",
+                protocolNames: ["ConvertibleToGeneratedContent"]
+            ) == "(Swift.String, any ConvertibleToGeneratedContent)"
+        )
+    }
 }
 
 // MARK: - Escaped Identifier

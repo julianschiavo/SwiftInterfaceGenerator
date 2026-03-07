@@ -80,7 +80,12 @@ struct SwiftInterfaceBuilder: Sendable {
 
         /// Adds a property, deduplicating by name and static-ness.
         mutating func addProperty(_ property: Property) {
-            guard !properties.contains(where: { $0.name == property.name && $0.isStatic == property.isStatic }) else {
+            if let existingIndex = properties.firstIndex(where: {
+                $0.name == property.name && $0.isStatic == property.isStatic
+            }) {
+                if property.hasSetter && !properties[existingIndex].hasSetter {
+                    properties[existingIndex] = property
+                }
                 return
             }
             properties.append(property)
@@ -301,6 +306,25 @@ struct SwiftInterfaceBuilder: Sendable {
                     Declaration.EnumCase(
                         name: enumCase.name,
                         rawPayload: enumCase.rawPayload,
+                        order: order
+                    )
+                )
+                setDeclaration(value)
+                continue
+            }
+
+            if let property = parseProtocolPropertyDescriptor(
+                from: line,
+                demangledSymbols: demangledSymbols,
+                moduleName: moduleName
+            ) {
+                var value = declaration(named: property.owner, order: order)
+                value.addProperty(
+                    Declaration.Property(
+                        name: property.name,
+                        rawType: property.rawType,
+                        isStatic: property.isStatic,
+                        hasSetter: property.hasSetter,
                         order: order
                     )
                 )
@@ -1090,19 +1114,117 @@ struct SwiftInterfaceBuilder: Sendable {
         moduleName: String = ""
     ) -> String {
         let cleaned = cleanedTypeName(rawTypeName, moduleName: moduleName)
+        return renderedNestedTypeName(cleaned, protocolNames: protocolNames)
+    }
 
-        if protocolNames.contains(cleaned) {
-            return "any \(cleaned)"
+    private func renderedNestedTypeName(
+        _ typeName: String,
+        protocolNames: Set<String>
+    ) -> String {
+        let trimmed = typeName.trimmingCharacters(in: .whitespaces)
+
+        if protocolNames.contains(trimmed) {
+            return "any \(trimmed)"
         }
 
-        if cleaned.hasSuffix("?") {
-            let inner = String(cleaned.dropLast())
-            if protocolNames.contains(inner) {
-                return "(any \(inner))?"
+        if trimmed.hasPrefix("inout ") {
+            let inner = String(trimmed.dropFirst("inout ".count))
+            return "inout \(renderedNestedTypeName(inner, protocolNames: protocolNames))"
+        }
+
+        if let effectArrowRange = topLevelArrowRange(in: trimmed) {
+            let left = String(trimmed[..<effectArrowRange.lowerBound]).trimmingCharacters(in: .whitespaces)
+            let right = String(trimmed[effectArrowRange.upperBound...]).trimmingCharacters(in: .whitespaces)
+            let leftRendered = renderedNestedTypeName(left, protocolNames: protocolNames)
+            let rightRendered = renderedNestedTypeName(right, protocolNames: protocolNames)
+            return "\(leftRendered) -> \(rightRendered)"
+        }
+
+        if trimmed.hasSuffix("?") {
+            let inner = String(trimmed.dropLast())
+            let renderedInner = renderedNestedTypeName(inner, protocolNames: protocolNames)
+            if renderedInner.hasPrefix("any ") {
+                return "(\(renderedInner))?"
+            }
+            return "\(renderedInner)?"
+        }
+
+        if trimmed.hasPrefix("["),
+           trimmed.hasSuffix("]") {
+            let inner = String(trimmed.dropFirst().dropLast())
+            if let colonIndex = firstTopLevelColon(in: inner) {
+                let key = inner[..<colonIndex].trimmingCharacters(in: .whitespaces)
+                let value = inner[inner.index(after: colonIndex)...].trimmingCharacters(in: .whitespaces)
+                return "[\(renderedNestedTypeName(String(key), protocolNames: protocolNames)) : \(renderedNestedTypeName(String(value), protocolNames: protocolNames))]"
+            }
+            return "[\(renderedNestedTypeName(inner, protocolNames: protocolNames))]"
+        }
+
+        if let angleBracketStart = trimmed.firstIndex(of: "<"),
+           let closingAngle = matchingClosingDelimiter(
+                in: trimmed,
+                from: angleBracketStart,
+                open: "<",
+                close: ">"
+           ),
+           trimmed.index(after: closingAngle) == trimmed.endIndex {
+            let base = String(trimmed[..<angleBracketStart])
+            let rawArguments = String(trimmed[trimmed.index(after: angleBracketStart)..<closingAngle])
+            if let arguments = try? splitTopLevel(rawArguments) {
+                let renderedArguments = arguments.map {
+                    renderedNestedTypeName($0, protocolNames: protocolNames)
+                }.joined(separator: ", ")
+                return "\(base)<\(renderedArguments)>"
             }
         }
 
-        return cleaned
+        if trimmed.hasPrefix("("),
+           trimmed.hasSuffix(")"),
+           let open = trimmed.firstIndex(of: "("),
+           let closingParenthesis = matchingClosingParenthesis(in: trimmed, from: open),
+           trimmed.index(after: closingParenthesis) == trimmed.endIndex {
+            let inner = String(trimmed[trimmed.index(after: open)..<closingParenthesis])
+            if let elements = try? splitTopLevel(inner), !elements.isEmpty {
+                let renderedElements = elements.map { element in
+                    guard let colonIndex = firstTopLevelColon(in: element) else {
+                        return renderedNestedTypeName(element, protocolNames: protocolNames)
+                    }
+
+                    let label = element[..<colonIndex].trimmingCharacters(in: .whitespaces)
+                    let type = element[element.index(after: colonIndex)...].trimmingCharacters(in: .whitespaces)
+                    return "\(label): \(renderedNestedTypeName(String(type), protocolNames: protocolNames))"
+                }.joined(separator: ", ")
+                return "(\(renderedElements))"
+            }
+        }
+
+        if trimmed.hasSuffix(".Type") {
+            let inner = String(trimmed.dropLast(".Type".count))
+            let renderedInner = renderedNestedTypeName(inner, protocolNames: protocolNames)
+            if renderedInner.hasPrefix("any ") {
+                return "(\(renderedInner)).Type"
+            }
+            return "\(renderedInner).Type"
+        }
+
+        return wrappedProtocolLeaves(in: trimmed, protocolNames: protocolNames)
+    }
+
+    private func wrappedProtocolLeaves(
+        in typeName: String,
+        protocolNames: Set<String>
+    ) -> String {
+        protocolNames
+            .sorted { $0.count > $1.count }
+            .reduce(typeName) { current, protocolName in
+                let escapedName = NSRegularExpression.escapedPattern(for: protocolName)
+                let pattern = #"(?<![\w.])(?<!any )\#(escapedName)(?![\w.])"#
+                return current.replacingOccurrences(
+                    of: pattern,
+                    with: "any \(protocolName)",
+                    options: .regularExpression
+                )
+            }
     }
 
     /// Parses an associated type descriptor symbol line.
@@ -1413,6 +1535,63 @@ struct SwiftInterfaceBuilder: Sendable {
         let owner = String(remainder[..<memberSeparator])
         let signature = String(remainder[remainder.index(after: memberSeparator)...])
         return (owner, signature)
+    }
+
+    /// Parses a protocol property requirement descriptor line.
+    ///
+    /// Matches lines like `"method descriptor for Module.Protocol.name.getter : Swift.String"`
+    /// and `"method descriptor for static Module.Protocol.value.getter : Swift.Int"`.
+    ///
+    /// - Parameters:
+    ///   - line: The demangled symbol line to parse.
+    ///   - demangledSymbols: The full list of demangled symbols (for setter detection).
+    ///   - moduleName: The module name prefix to match.
+    /// - Returns: A tuple of property metadata, or `nil` if the line doesn't match.
+    func parseProtocolPropertyDescriptor(
+        from line: String,
+        demangledSymbols: [String],
+        moduleName: String
+    ) -> (owner: String, name: String, rawType: String, isStatic: Bool, hasSetter: Bool)? {
+        let prefix = "method descriptor for "
+        guard line.hasPrefix(prefix) else {
+            return nil
+        }
+
+        var remainder = String(line.dropFirst(prefix.count))
+        let isStatic: Bool
+        if remainder.hasPrefix("static ") {
+            isStatic = true
+            remainder.removeFirst("static ".count)
+        } else {
+            isStatic = false
+        }
+
+        guard remainder.hasPrefix("\(moduleName).") else {
+            return nil
+        }
+
+        let getterToken = ".getter : "
+        guard let getterRange = remainder.range(of: getterToken) else {
+            return nil
+        }
+
+        let path = String(remainder[..<getterRange.lowerBound])
+        guard let member = parseOwnerMemberPath(path, moduleName: moduleName) else {
+            return nil
+        }
+
+        let rawType = String(remainder[getterRange.upperBound...])
+        let staticPrefix = isStatic ? "static " : ""
+        let setterPrefix = "method descriptor for \(staticPrefix)\(moduleName).\(member.owner).\(member.name).setter : "
+        let hasSetter = demangledSymbols.contains(where: { $0.hasPrefix(setterPrefix) })
+
+        return (
+            owner: member.owner,
+            name: member.name,
+            rawType: rawType,
+            isStatic: isStatic,
+            hasSetter: hasSetter
+        )
     }
 
     /// Parses a method or initializer symbol line from a concrete type.
@@ -1851,6 +2030,44 @@ struct SwiftInterfaceBuilder: Sendable {
         }
 
         return nil
+    }
+
+    /// Finds the last top-level `->` in a type string, ignoring nested delimiters.
+    private func topLevelArrowRange(in string: String) -> Range<String.Index>? {
+        var depth = 0
+        var previousCharacter: Character?
+        var arrowRange: Range<String.Index>?
+
+        for index in string.indices {
+            let character = string[index]
+            if character == ">" && previousCharacter == "-" && depth == 0 {
+                let lowerBound = string.index(before: index)
+                arrowRange = lowerBound..<string.index(after: index)
+                previousCharacter = character
+                continue
+            }
+
+            switch character {
+            case "(", "[":
+                depth += 1
+            case "<":
+                if previousCharacter != "-" {
+                    depth += 1
+                }
+            case ")", "]":
+                depth -= 1
+            case ">":
+                if previousCharacter != "-" {
+                    depth -= 1
+                }
+            default:
+                break
+            }
+
+            previousCharacter = character
+        }
+
+        return arrowRange
     }
 
     /// Splits a string at top-level commas, respecting nested delimiters.

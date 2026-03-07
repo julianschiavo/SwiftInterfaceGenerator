@@ -191,6 +191,37 @@ struct MakeInterfaceTests {
     }
 
     @Test
+    func protocolPropertyRequirementsFromMethodDescriptors() {
+        let interface = renderingBuilder.makeInterface(
+            demangledSymbols: [
+                "protocol descriptor for Mod.Described",
+                "method descriptor for Mod.Described.title.getter : Swift.String",
+                "method descriptor for static Mod.Described.version.getter : Swift.Int",
+            ],
+            targetTriple: "arm64-apple-macosx15.0",
+            moduleName: "Mod",
+            compilerVersion: "Test"
+        )
+
+        #expect(
+            normalizedInterface(interface)
+                == normalizedInterface(
+                    """
+                // swift-interface-format-version: 1.0
+                // swift-compiler-version: Test
+                // swift-module-flags: -target arm64-apple-macosx15.0 -enable-library-evolution -module-name Mod
+                import Swift
+
+                public protocol Described {
+                  var title: Swift.String { get }
+                  static var version: Swift.Int { get }
+                }
+                """
+                )
+        )
+    }
+
+    @Test
     func enumWithMixedCases() {
         let interface = renderingBuilder.makeInterface(
             demangledSymbols: [
