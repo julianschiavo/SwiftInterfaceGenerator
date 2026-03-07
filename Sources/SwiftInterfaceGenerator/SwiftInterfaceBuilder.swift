@@ -25,6 +25,13 @@ struct SwiftInterfaceBuilder: Sendable {
             let order: Int
         }
 
+        /// A discovered associated type requirement on a protocol.
+        struct AssociatedType: Sendable, Hashable {
+            let name: String
+            var conformances: [String]
+            let order: Int
+        }
+
         /// A discovered subscript requirement or member on a type.
         struct Subscript: Sendable, Hashable {
             let rawArguments: String
@@ -54,7 +61,7 @@ struct SwiftInterfaceBuilder: Sendable {
         var isClass = false
         var isOpen = false
         var conformances: [String] = []
-        var associatedTypes: [String] = []
+        var associatedTypes: [AssociatedType] = []
         var properties: [Property] = []
         var subscripts: [Subscript] = []
         var initializers: [Callable] = []
@@ -71,11 +78,30 @@ struct SwiftInterfaceBuilder: Sendable {
         }
 
         /// Adds an associated type if not already present.
-        mutating func addAssociatedType(_ name: String) {
-            guard !associatedTypes.contains(name) else {
+        mutating func addAssociatedType(_ name: String, order: Int) {
+            guard !associatedTypes.contains(where: { $0.name == name }) else {
                 return
             }
-            associatedTypes.append(name)
+            associatedTypes.append(AssociatedType(name: name, conformances: [], order: order))
+        }
+
+        /// Adds an associated type conformance requirement if not already present.
+        mutating func addAssociatedTypeConformance(
+            associatedType name: String,
+            conformance: String,
+            order: Int
+        ) {
+            if let existingIndex = associatedTypes.firstIndex(where: { $0.name == name }) {
+                guard !associatedTypes[existingIndex].conformances.contains(conformance) else {
+                    return
+                }
+                associatedTypes[existingIndex].conformances.append(conformance)
+                return
+            }
+
+            associatedTypes.append(
+                AssociatedType(name: name, conformances: [conformance], order: order)
+            )
         }
 
         /// Adds a property, deduplicating by name and static-ness.
@@ -244,7 +270,21 @@ struct SwiftInterfaceBuilder: Sendable {
 
             if let (owner, associatedType) = parseAssociatedTypeDescriptor(from: line, moduleName: moduleName) {
                 var value = declaration(named: owner, order: order)
-                value.addAssociatedType(associatedType)
+                value.addAssociatedType(associatedType, order: order)
+                setDeclaration(value)
+                continue
+            }
+
+            if let (owner, associatedType, conformance) = parseAssociatedConformanceDescriptor(
+                from: line,
+                moduleName: moduleName
+            ) {
+                var value = declaration(named: owner, order: order)
+                value.addAssociatedTypeConformance(
+                    associatedType: associatedType,
+                    conformance: conformance,
+                    order: order
+                )
                 setDeclaration(value)
                 continue
             }
@@ -579,8 +619,14 @@ struct SwiftInterfaceBuilder: Sendable {
             body.append("")
         }
 
-        for associatedType in declaration.associatedTypes.sorted() {
-            body.append("\(indent)  associatedtype \(escapedIdentifier(associatedType))")
+        for associatedType in declaration.associatedTypes.sorted(by: { $0.order < $1.order }) {
+            let conformanceClause = renderedAssociatedTypeConformanceClause(
+                for: associatedType,
+                moduleName: moduleName
+            )
+            body.append(
+                "\(indent)  associatedtype \(escapedIdentifier(associatedType.name))\(conformanceClause)"
+            )
         }
 
         for enumCase in declaration.enumCases.sorted(by: { $0.order < $1.order }) {
@@ -695,7 +741,44 @@ struct SwiftInterfaceBuilder: Sendable {
         protocolNames: Set<String>,
         moduleName: String
     ) -> String {
-        var conformances = declaration.conformances
+        let conformances = normalizedConformances(declaration.conformances)
+        guard !conformances.isEmpty else {
+            return ""
+        }
+
+        return ": " + conformances
+            .map { cleanedTypeName($0, moduleName: moduleName) }
+            .joined(separator: ", ")
+    }
+
+    /// Renders the conformance clause for an associated type requirement.
+    ///
+    /// - Parameters:
+    ///   - associatedType: The associated type to render.
+    ///   - moduleName: The module name for type name cleanup.
+    /// - Returns: A clause like `": Sendable"`, or an empty string.
+    private func renderedAssociatedTypeConformanceClause(
+        for associatedType: Declaration.AssociatedType,
+        moduleName: String
+    ) -> String {
+        let conformances = normalizedConformances(associatedType.conformances)
+        guard !conformances.isEmpty else {
+            return ""
+        }
+
+        return ": " + conformances
+            .map { cleanedTypeName($0, moduleName: moduleName) }
+            .joined(separator: ", ")
+    }
+
+    /// Normalizes conformance lists for declarations and associated types.
+    ///
+    /// Applies the same cleanup rules as interface inheritance clauses:
+    /// - removes unsupported attribute-related conformances
+    /// - folds `Encodable` + `Decodable` into `Codable`
+    /// - drops redundant `Equatable` when `Hashable` is present
+    private func normalizedConformances(_ rawConformances: [String]) -> [String] {
+        var conformances = rawConformances
         let unsupportedConformances: Set<String> = [
             "Foundation.AttributeScope",
             "Foundation.AttributedStringKey",
@@ -717,13 +800,7 @@ struct SwiftInterfaceBuilder: Sendable {
             conformances.removeAll { $0 == "Swift.Equatable" }
         }
 
-        guard !conformances.isEmpty else {
-            return ""
-        }
-
-        return ": " + conformances
-            .map { cleanedTypeName($0, moduleName: moduleName) }
-            .joined(separator: ", ")
+        return conformances
     }
 
     /// Infers generic parameter names for a declaration by scanning its members.
@@ -1319,6 +1396,64 @@ struct SwiftInterfaceBuilder: Sendable {
         }
         let conformance = String(remainder[separator.upperBound...])
         return (owner, conformance)
+    }
+
+    /// Parses an associated conformance descriptor symbol line.
+    ///
+    /// Matches lines like
+    /// `"associated conformance descriptor for Module.Protocol.Module.Protocol.Element: Module.Displayable"`
+    /// and extracts the owning protocol, associated type name, and required conformance.
+    ///
+    /// - Parameters:
+    ///   - line: The demangled symbol line to parse.
+    ///   - moduleName: The module name prefix to match.
+    /// - Returns: A tuple of `(owner, associatedType, conformance)`, or `nil` if the line
+    ///   doesn't match.
+    func parseAssociatedConformanceDescriptor(
+        from line: String,
+        moduleName: String
+    ) -> (owner: String, associatedType: String, conformance: String)? {
+        let prefix = "associated conformance descriptor for \(moduleName)."
+        guard line.hasPrefix(prefix) else {
+            return nil
+        }
+
+        let remainder = String(line.dropFirst(prefix.count))
+        guard let separator = remainder.range(of: ": ") else {
+            return nil
+        }
+
+        let lhs = String(remainder[..<separator.lowerBound])
+        let conformance = String(remainder[separator.upperBound...])
+        guard let ownerSeparator = lhs.range(of: ".\(moduleName).") else {
+            return nil
+        }
+
+        let owner = String(lhs[..<ownerSeparator.lowerBound])
+        guard !owner.isEmpty else {
+            return nil
+        }
+
+        let associatedPath = String(lhs[ownerSeparator.upperBound...])
+        let ownerPrefix = "\(owner)."
+        let associatedTypePath: String
+        if associatedPath.hasPrefix(ownerPrefix) {
+            associatedTypePath = String(associatedPath.dropFirst(ownerPrefix.count))
+        } else {
+            associatedTypePath = associatedPath
+        }
+
+        let associatedType: String
+        if let nameSeparator = associatedTypePath.lastIndex(of: ".") {
+            associatedType = String(associatedTypePath[associatedTypePath.index(after: nameSeparator)...])
+        } else {
+            associatedType = associatedTypePath
+        }
+
+        guard !associatedType.isEmpty else {
+            return nil
+        }
+        return (owner, associatedType, conformance)
     }
 
     /// Parses a property descriptor symbol line.

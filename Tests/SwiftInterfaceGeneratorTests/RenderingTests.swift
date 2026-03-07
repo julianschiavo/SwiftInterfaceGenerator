@@ -222,6 +222,40 @@ struct MakeInterfaceTests {
     }
 
     @Test
+    func associatedTypeConstraintsFromAssociatedConformanceDescriptors() {
+        let interface = renderingBuilder.makeInterface(
+            demangledSymbols: [
+                "protocol descriptor for Mod.Displayable",
+                "protocol descriptor for Mod.Tool",
+                "associated type descriptor for Mod.Tool.Output",
+                "associated conformance descriptor for Mod.Tool.Mod.Tool.Output: Mod.Displayable",
+            ],
+            targetTriple: "arm64-apple-macosx15.0",
+            moduleName: "Mod",
+            compilerVersion: "Test"
+        )
+
+        #expect(
+            normalizedInterface(interface)
+                == normalizedInterface(
+                    """
+                // swift-interface-format-version: 1.0
+                // swift-compiler-version: Test
+                // swift-module-flags: -target arm64-apple-macosx15.0 -enable-library-evolution -module-name Mod
+                import Swift
+
+                public protocol Displayable {
+                }
+
+                public protocol Tool {
+                  associatedtype Output: Displayable
+                }
+                """
+                )
+        )
+    }
+
+    @Test
     func enumWithMixedCases() {
         let interface = renderingBuilder.makeInterface(
             demangledSymbols: [
