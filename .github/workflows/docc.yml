@@ -22,7 +22,7 @@ jobs:
 
       - name: Build documentation
         run: |
-          swift package generate-documentation \
+          swift package --allow-writing-to-package-directory generate-documentation \
             --target SwiftInterfaceGenerator \
             --disable-indexing \
             --transform-for-static-hosting \

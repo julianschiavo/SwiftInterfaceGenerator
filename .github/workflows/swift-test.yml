@@ -13,8 +13,38 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Cache SwiftPM Shared Cache
+        uses: actions/cache@v4
+        with:
+          path: .swiftpm-cache
+          key: ${{ runner.os }}-swiftpm-cache-${{ hashFiles('Package.swift', 'Package.resolved') }}
+          restore-keys: |
+            ${{ runner.os }}-swiftpm-cache-
+
+      - name: Cache xcbeautify
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/Homebrew
+            /opt/homebrew/Cellar/xcbeautify
+            /usr/local/Cellar/xcbeautify
+          key: ${{ runner.os }}-xcbeautify-v1
+
+      - name: Install xcbeautify
+        run: |
+          if ! command -v xcbeautify >/dev/null 2>&1; then
+            export HOMEBREW_NO_AUTO_UPDATE=1
+            brew install xcbeautify
+          fi
+
       - name: Show Swift version
         run: swift --version
 
       - name: Run test suite
-        run: swift test
+        env:
+          NSUnbufferedIO: "YES"
+        shell: bash
+        run: |
+          set -o pipefail
+          swift test --cache-path .swiftpm-cache --disable-index-store \
+            2>&1 | xcbeautify --renderer github-actions
