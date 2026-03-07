@@ -34,12 +34,33 @@ jobs:
 
       - name: Build documentation
         run: |
-          swift package --cache-path .swiftpm-cache --allow-writing-to-package-directory generate-documentation \
+          swift package --cache-path .swiftpm-cache --allow-writing-to-directory ./docs generate-documentation \
             --target SwiftInterfaceGenerator \
             --disable-indexing \
             --transform-for-static-hosting \
             --hosting-base-path SwiftInterfaceGenerator \
-            --output-path docs
+            --output-path ./docs
+
+          cat > docs/index.html <<'EOF'
+          <!doctype html>
+          <html lang="en">
+          <head>
+            <meta charset="utf-8">
+            <title>SwiftInterfaceGenerator Documentation</title>
+            <meta http-equiv="refresh" content="0; url=./documentation/swiftinterfacegenerator/">
+            <link rel="canonical" href="./documentation/swiftinterfacegenerator/">
+            <script>
+              location.replace(new URL("./documentation/swiftinterfacegenerator/", location.href));
+            </script>
+          </head>
+          <body>
+            <p>
+              Redirecting to
+              <a href="./documentation/swiftinterfacegenerator/">SwiftInterfaceGenerator documentation</a>.
+            </p>
+          </body>
+          </html>
+          EOF
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v4
