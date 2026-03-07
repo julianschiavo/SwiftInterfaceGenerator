@@ -103,8 +103,10 @@ public struct SwiftInterfaceGenerator: Sendable {
         try? FileManager.default.removeItem(at: moduleDirectoryURL)
         try FileManager.default.createDirectory(at: moduleDirectoryURL, withIntermediateDirectories: true)
 
-        let demangledSymbols = try await loadDemangledSymbols(frameworkBinaryURL: normalizedFrameworkBinaryURL)
-        let compilerVersion = try await loadCompilerVersion()
+        async let demangledSymbolsTask = loadDemangledSymbols(frameworkBinaryURL: normalizedFrameworkBinaryURL)
+        async let compilerVersionTask = loadCompilerVersion()
+        let demangledSymbols = try await demangledSymbolsTask
+        let compilerVersion = try await compilerVersionTask
         let renderableExternalModules = try await loadRenderableExternalModules(
             demangledSymbols: demangledSymbols,
             moduleName: moduleName,
@@ -148,11 +150,13 @@ public struct SwiftInterfaceGenerator: Sendable {
             stdin: rawSymbols.stdout
         )
 
-        return demangled.stdout
-            .split(whereSeparator: \.isNewline)
-            .map(String.init)
-            .map(Self.normalizedSymbolLine)
-            .filter { !$0.isEmpty }
+        return Array(
+            demangled.stdout
+                .split(whereSeparator: \.isNewline)
+                .lazy
+                .map { Self.normalizedSymbolLine(String($0)) }
+                .filter { !$0.isEmpty }
+        )
     }
 
     /// Strips the address and type-code prefix from a demangled symbol line.
@@ -229,18 +233,26 @@ public struct SwiftInterfaceGenerator: Sendable {
             return Set(candidateModules)
         }
 
-        var renderableModules: Set<String> = []
-        for module in candidateModules {
-            if try await canImport(
-                module: module,
-                sdkIdentifier: sdkIdentifier,
-                targetTriple: targetTriple
-            ) {
-                renderableModules.insert(module)
+        return try await withThrowingTaskGroup(of: (String, Bool).self) { group in
+            for module in candidateModules {
+                group.addTask {
+                    let result = try await self.canImport(
+                        module: module,
+                        sdkIdentifier: sdkIdentifier,
+                        targetTriple: targetTriple
+                    )
+                    return (module, result)
+                }
             }
-        }
 
-        return renderableModules
+            var renderableModules: Set<String> = []
+            for try await (module, canImport) in group {
+                if canImport {
+                    renderableModules.insert(module)
+                }
+            }
+            return renderableModules
+        }
     }
 
     private func canImport(

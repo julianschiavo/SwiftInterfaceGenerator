@@ -219,11 +219,35 @@ struct SwiftInterfaceBuilder: Sendable {
     ///   - moduleName: The module name used to match symbol prefixes.
     /// - Returns: A dictionary keyed by fully-qualified type name, containing the
     ///   discovered ``Declaration`` for each type.
+    /// A sorted array of symbols that supports efficient prefix-matching via binary search.
+    struct SortedSymbols {
+        let sorted: [String]
+
+        init(_ symbols: [String]) {
+            self.sorted = symbols.sorted()
+        }
+
+        func containsPrefix(_ prefix: String) -> Bool {
+            var low = 0
+            var high = sorted.count
+            while low < high {
+                let mid = (low + high) / 2
+                if sorted[mid] < prefix {
+                    low = mid + 1
+                } else {
+                    high = mid
+                }
+            }
+            return low < sorted.count && sorted[low].hasPrefix(prefix)
+        }
+    }
+
     private func discoverDeclarations(
         from demangledSymbols: [String],
         moduleName: String
     ) -> [String: Declaration] {
         var declarations: [String: Declaration] = [:]
+        let sortedSymbols = SortedSymbols(demangledSymbols)
         let concreteTypeNames = Set(
             demangledSymbols.compactMap {
                 extractedTypeName(
@@ -317,7 +341,7 @@ struct SwiftInterfaceBuilder: Sendable {
 
             if let subscriptMember = parseSubscriptDescriptor(
                 from: line,
-                demangledSymbols: demangledSymbols,
+                sortedSymbols: sortedSymbols,
                 moduleName: moduleName
             ) {
                 var value = declaration(named: subscriptMember.owner, order: order)
@@ -335,7 +359,7 @@ struct SwiftInterfaceBuilder: Sendable {
 
             if let property = parsePropertyDescriptor(
                 from: line,
-                demangledSymbols: demangledSymbols,
+                sortedSymbols: sortedSymbols,
                 moduleName: moduleName
             ) {
                 var value = declaration(named: property.owner, order: order)
@@ -367,7 +391,7 @@ struct SwiftInterfaceBuilder: Sendable {
 
             if let property = parseProtocolPropertyDescriptor(
                 from: line,
-                demangledSymbols: demangledSymbols,
+                sortedSymbols: sortedSymbols,
                 moduleName: moduleName
             ) {
                 var value = declaration(named: property.owner, order: order)
@@ -516,13 +540,31 @@ struct SwiftInterfaceBuilder: Sendable {
         compilerVersion: String
     ) -> String {
         let protocolNames = Set(
-            declarations.values
+            declarations.values.lazy
                 .filter { $0.resolvedKind == .protocol }
                 .map(\.fullName)
         )
         let knownTypeComponents = Set(
-            declarations.keys.flatMap { $0.split(separator: ".").map(String.init) }
+            declarations.keys.lazy.flatMap { $0.split(separator: ".").lazy.map(String.init) }
         )
+
+        // Pre-compute children map: parent -> sorted child names (P4 optimization)
+        var childrenMap: [String: [String]] = [:]
+        for key in declarations.keys {
+            if let parent = parentName(of: key, in: declarations) {
+                childrenMap[parent, default: []].append(key)
+            }
+        }
+        for key in childrenMap.keys {
+            childrenMap[key]!.sort {
+                declarations[$0, default: Declaration(fullName: $0, order: .max)].order
+                    < declarations[$1, default: Declaration(fullName: $1, order: .max)].order
+            }
+        }
+
+        // Pre-compute generic arity map (P3 optimization)
+        let genericArityMap = precomputedGenericArities(declarations: declarations, moduleName: moduleName)
+
         let topLevelNames = declarations.keys
             .filter { parentName(of: $0, in: declarations) == nil }
             .sorted {
@@ -553,6 +595,8 @@ struct SwiftInterfaceBuilder: Sendable {
                     declarations: declarations,
                     protocolNames: protocolNames,
                     knownTypeComponents: knownTypeComponents,
+                    childrenMap: childrenMap,
+                    genericArityMap: genericArityMap,
                     moduleName: moduleName,
                     level: 0
                 )
@@ -584,6 +628,8 @@ struct SwiftInterfaceBuilder: Sendable {
         declarations: [String: Declaration],
         protocolNames: Set<String>,
         knownTypeComponents: Set<String>,
+        childrenMap: [String: [String]],
+        genericArityMap: [String: Int],
         moduleName: String,
         level: Int
     ) -> String {
@@ -592,15 +638,10 @@ struct SwiftInterfaceBuilder: Sendable {
         }
 
         let indent = String(repeating: "  ", count: level)
-        let childNames = declarations.keys
-            .filter { parentName(of: $0, in: declarations) == fullName }
-            .sorted {
-                declarations[$0, default: Declaration(fullName: $0, order: .max)].order
-                    < declarations[$1, default: Declaration(fullName: $1, order: .max)].order
-            }
+        let childNames = childrenMap[fullName] ?? []
         let genericParameters = inferredGenericParameters(
             for: declaration,
-            declarations: declarations,
+            genericArityMap: genericArityMap,
             knownTypeComponents: knownTypeComponents,
             moduleName: moduleName
         )
@@ -638,6 +679,8 @@ struct SwiftInterfaceBuilder: Sendable {
                     declarations: declarations,
                     protocolNames: protocolNames,
                     knownTypeComponents: knownTypeComponents,
+                    childrenMap: childrenMap,
+                    genericArityMap: genericArityMap,
                     moduleName: moduleName,
                     level: level + 1
                 )
@@ -913,15 +956,11 @@ struct SwiftInterfaceBuilder: Sendable {
     /// - Returns: An array of inferred generic parameter names.
     private func inferredGenericParameters(
         for declaration: Declaration,
-        declarations: [String: Declaration],
+        genericArityMap: [String: Int],
         knownTypeComponents: Set<String>,
         moduleName: String
     ) -> [String] {
-        let arity = inferredGenericArity(
-            for: declaration.fullName,
-            declarations: declarations,
-            moduleName: moduleName
-        )
+        let arity = genericArityMap[declaration.fullName] ?? 0
         guard arity > 0 else {
             return []
         }
@@ -934,55 +973,18 @@ struct SwiftInterfaceBuilder: Sendable {
             callableSignatures
 
         var genericParameters: [String] = []
-        var excludedTokens: Set<String> = [
-            "Any",
-            "AnyObject",
-            "Bool",
-            "Data",
-            "Date",
-            "Decoder",
-            "Double",
-            "Encoder",
-            "Error",
-            "Float",
-            "Hasher",
-            "IndexPath",
-            "Int",
-            "Int32",
-            "Int64",
-            "Never",
-            "Self",
-            "String",
-            "Type",
-            "UInt",
-            "UInt32",
-            "UInt64",
-            "URL",
-            "UUID",
-            "Void",
-            "_",
-            "async",
-            "class",
-            "func",
-            "init",
-            "inout",
-            "mutating",
-            "nil",
-            "some",
-            "static",
-            "throws",
-            "where",
-        ]
+        var excludedTokens = Self.genericExcludedTokens
         if !moduleName.isEmpty {
             excludedTokens.insert(moduleName)
         }
 
+        var seenParameters: Set<String> = []
         for fragment in rawFragments {
             for token in bareTokens(in: fragment) {
                 if knownTypeComponents.contains(token) || excludedTokens.contains(token) {
                     continue
                 }
-                if !genericParameters.contains(token) {
+                if seenParameters.insert(token).inserted {
                     genericParameters.append(token)
                 }
             }
@@ -1047,7 +1049,7 @@ struct SwiftInterfaceBuilder: Sendable {
     ) -> [String] {
         let declarations = discoverDeclarations(from: demangledSymbols, moduleName: moduleName)
         let knownTypeComponents = Set(
-            declarations.keys.flatMap { $0.split(separator: ".").map(String.init) }
+            declarations.keys.lazy.flatMap { $0.split(separator: ".").lazy.map(String.init) }
         )
 
         return discoveredImports(
@@ -1065,20 +1067,20 @@ struct SwiftInterfaceBuilder: Sendable {
         var rawFragments: [String] = []
         for declaration in declarations.values.sorted(by: { $0.order < $1.order }) {
             rawFragments.append(contentsOf: declaration.conformances)
-            rawFragments.append(contentsOf: declaration.initializers.map(\.rawSignature))
-            rawFragments.append(contentsOf: declaration.methods.map(\.rawSignature))
-            rawFragments.append(contentsOf: declaration.staticMethods.map(\.rawSignature))
-            rawFragments.append(contentsOf: declaration.properties.map(\.rawType))
-            rawFragments.append(contentsOf: declaration.enumCases.compactMap(\.rawPayload))
+            rawFragments.append(contentsOf: declaration.initializers.lazy.map(\.rawSignature))
+            rawFragments.append(contentsOf: declaration.methods.lazy.map(\.rawSignature))
+            rawFragments.append(contentsOf: declaration.staticMethods.lazy.map(\.rawSignature))
+            rawFragments.append(contentsOf: declaration.properties.lazy.map(\.rawType))
+            rawFragments.append(contentsOf: declaration.enumCases.lazy.compactMap(\.rawPayload))
         }
 
         var modules: [String] = []
+        var seen: Set<String> = []
 
         func addModule(_ module: String) {
-            guard !modules.contains(module) else {
-                return
+            if seen.insert(module).inserted {
+                modules.append(module)
             }
-            modules.append(module)
         }
 
         for fragment in rawFragments {
@@ -1224,11 +1226,7 @@ struct SwiftInterfaceBuilder: Sendable {
         }
 
         if isProtocolRequirement {
-            result = result.replacingOccurrences(
-                of: #"(?<!\w)A\."#,
-                with: "Self.",
-                options: .regularExpression
-            )
+            result = result.replacingSelfTypePattern()
         }
 
         return result
@@ -1278,6 +1276,33 @@ struct SwiftInterfaceBuilder: Sendable {
     ///   - rawTypeName: The raw type name from demangled output.
     ///   - moduleName: The current module name to strip (defaults to empty).
     /// - Returns: The cleaned type name suitable for a `.swiftinterface` file.
+    private static let genericExcludedTokens: Set<String> = [
+        "Any", "AnyObject", "Bool", "Data", "Date", "Decoder", "Double",
+        "Encoder", "Error", "Float", "Hasher", "IndexPath", "Int", "Int32",
+        "Int64", "Never", "Self", "String", "Type", "UInt", "UInt32",
+        "UInt64", "URL", "UUID", "Void", "_", "async", "class", "func",
+        "init", "inout", "mutating", "nil", "some", "static", "throws", "where",
+    ]
+
+    private static let typeReplacements: [(String, String)] = [
+        ("__owned ", ""),
+        ("Swift.Actor", "_Concurrency.Actor"),
+        ("Swift.AsyncIteratorProtocol", "_Concurrency.AsyncIteratorProtocol"),
+        ("Swift.AsyncSequence", "_Concurrency.AsyncSequence"),
+        ("__C.CGAffineTransform", "CoreGraphics.CGAffineTransform"),
+        ("__C.CGFloat", "CoreGraphics.CGFloat"),
+        ("__C.CGPoint", "CoreGraphics.CGPoint"),
+        ("__C.CGRect", "CoreGraphics.CGRect"),
+        ("__C.CGSize", "CoreGraphics.CGSize"),
+        ("__C.CGImageRef", "CoreGraphics.CGImage"),
+        ("__C.CATransform3D", "QuartzCore.CATransform3D"),
+        ("__C.NSCoder", "Foundation.NSCoder"),
+        ("__C.NSUserActivity", "Foundation.NSUserActivity"),
+        ("__C.NSHashTable", "Foundation.NSHashTable"),
+        ("__C.IOSurfaceRef", "IOSurfaceRef"),
+        ("__C.audit_token_t", "Darwin.audit_token_t"),
+    ]
+
     func cleanedTypeName(
         _ rawTypeName: String,
         moduleName: String = ""
@@ -1286,33 +1311,14 @@ struct SwiftInterfaceBuilder: Sendable {
         if !moduleName.isEmpty {
             cleaned = cleaned.replacingOccurrences(of: "\(moduleName).", with: "")
         }
+        for (from, to) in Self.typeReplacements {
+            if cleaned.contains(from) {
+                cleaned = cleaned.replacingOccurrences(of: from, with: to)
+            }
+        }
         return cleaned
-            .replacingOccurrences(of: "__owned ", with: "")
-            .replacingOccurrences(of: "Swift.Actor", with: "_Concurrency.Actor")
-            .replacingOccurrences(of: "Swift.AsyncIteratorProtocol", with: "_Concurrency.AsyncIteratorProtocol")
-            .replacingOccurrences(of: "Swift.AsyncSequence", with: "_Concurrency.AsyncSequence")
-            .replacingOccurrences(of: "__C.CGAffineTransform", with: "CoreGraphics.CGAffineTransform")
-            .replacingOccurrences(of: "__C.CGFloat", with: "CoreGraphics.CGFloat")
-            .replacingOccurrences(of: "__C.CGPoint", with: "CoreGraphics.CGPoint")
-            .replacingOccurrences(of: "__C.CGRect", with: "CoreGraphics.CGRect")
-            .replacingOccurrences(of: "__C.CGSize", with: "CoreGraphics.CGSize")
-            .replacingOccurrences(of: "__C.CGImageRef", with: "CoreGraphics.CGImage")
-            .replacingOccurrences(of: "__C.CATransform3D", with: "QuartzCore.CATransform3D")
-            .replacingOccurrences(of: "__C.NSCoder", with: "Foundation.NSCoder")
-            .replacingOccurrences(of: "__C.NSUserActivity", with: "Foundation.NSUserActivity")
-            .replacingOccurrences(of: "__C.NSHashTable", with: "Foundation.NSHashTable")
-            .replacingOccurrences(of: "__C.IOSurfaceRef", with: "IOSurfaceRef")
-            .replacingOccurrences(of: "__C.audit_token_t", with: "Darwin.audit_token_t")
-            .replacingOccurrences(
-                of: #"(?<!\w)A\.([A-Z][0-9]?)(?!\w)"#,
-                with: "$1",
-                options: .regularExpression
-            )
-            .replacingOccurrences(
-                of: #"(?<![\w`])Protocol(?![\w`])"#,
-                with: "`Protocol`",
-                options: .regularExpression
-            )
+            .replacingADotPattern()
+            .replacingProtocolKeyword()
     }
 
     /// Renders a type name with proper existential syntax for protocols.
@@ -1431,8 +1437,7 @@ struct SwiftInterfaceBuilder: Sendable {
         in typeName: String,
         protocolNames: Set<String>
     ) -> String {
-        protocolNames
-            .sorted { $0.count > $1.count }
+        protocolNames.sorted { $0.count > $1.count }
             .reduce(typeName) { current, protocolName in
                 replacingProtocolLeaf(
                     named: protocolName,
@@ -1619,7 +1624,7 @@ struct SwiftInterfaceBuilder: Sendable {
     /// - Returns: A tuple of property metadata, or `nil` if the line doesn't match.
     func parsePropertyDescriptor(
         from line: String,
-        demangledSymbols: [String],
+        sortedSymbols: SortedSymbols,
         moduleName: String
     ) -> (owner: String, name: String, rawType: String, isStatic: Bool, hasSetter: Bool)? {
         let prefix = "property descriptor for "
@@ -1654,9 +1659,9 @@ struct SwiftInterfaceBuilder: Sendable {
         let setterPrefix = "\(staticPrefix)\(moduleName).\(member.owner).\(member.name).setter : "
         let dispatchSetterPrefix = "dispatch thunk of \(moduleName).\(member.owner).\(member.name).setter : "
 
-        let hasGetter = demangledSymbols.contains(where: { $0.hasPrefix(getterPrefix) })
-        let hasSetter = (hasGetter && demangledSymbols.contains(where: { $0.hasPrefix(setterPrefix) }))
-            || demangledSymbols.contains(where: { $0.hasPrefix(dispatchSetterPrefix) })
+        let hasGetter = sortedSymbols.containsPrefix(getterPrefix)
+        let hasSetter = (hasGetter && sortedSymbols.containsPrefix(setterPrefix))
+            || sortedSymbols.containsPrefix(dispatchSetterPrefix)
 
         return (
             owner: member.owner,
@@ -1679,7 +1684,7 @@ struct SwiftInterfaceBuilder: Sendable {
     /// - Returns: A tuple of subscript metadata, or `nil` if the line doesn't match.
     func parseSubscriptDescriptor(
         from line: String,
-        demangledSymbols: [String],
+        sortedSymbols: SortedSymbols,
         moduleName: String
     ) -> (owner: String, rawArguments: String, rawReturnType: String, hasSetter: Bool)? {
         let prefix = "property descriptor for \(moduleName)."
@@ -1716,9 +1721,9 @@ struct SwiftInterfaceBuilder: Sendable {
         let setterPrefix = "\(moduleName).\(owner).subscript.setter : "
         let dispatchSetterPrefix = "dispatch thunk of \(moduleName).\(owner).subscript.setter : "
 
-        let hasSetter = demangledSymbols.contains(where: { $0.hasPrefix(setterPrefix) })
-            || demangledSymbols.contains(where: { $0.hasPrefix(dispatchSetterPrefix) })
-        let hasGetter = demangledSymbols.contains(where: { $0.hasPrefix(getterPrefix) })
+        let hasSetter = sortedSymbols.containsPrefix(setterPrefix)
+            || sortedSymbols.containsPrefix(dispatchSetterPrefix)
+        let hasGetter = sortedSymbols.containsPrefix(getterPrefix)
         guard hasGetter else {
             return nil
         }
@@ -1834,7 +1839,7 @@ struct SwiftInterfaceBuilder: Sendable {
     /// - Returns: A tuple of property metadata, or `nil` if the line doesn't match.
     func parseProtocolPropertyDescriptor(
         from line: String,
-        demangledSymbols: [String],
+        sortedSymbols: SortedSymbols,
         moduleName: String
     ) -> (owner: String, name: String, rawType: String, isStatic: Bool, hasSetter: Bool)? {
         let prefix = "method descriptor for "
@@ -1868,7 +1873,7 @@ struct SwiftInterfaceBuilder: Sendable {
         let rawType = String(remainder[getterRange.upperBound...])
         let staticPrefix = isStatic ? "static " : ""
         let setterPrefix = "method descriptor for \(staticPrefix)\(moduleName).\(member.owner).\(member.name).setter : "
-        let hasSetter = demangledSymbols.contains(where: { $0.hasPrefix(setterPrefix) })
+        let hasSetter = sortedSymbols.containsPrefix(setterPrefix)
 
         return (
             owner: member.owner,
@@ -2075,11 +2080,7 @@ struct SwiftInterfaceBuilder: Sendable {
             let rawConstraints = String(genericContent[whereRange.upperBound...])
                 .trimmingCharacters(in: .whitespaces)
             let cleanedConstraints = cleanedTypeName(rawConstraints, moduleName: moduleName)
-                .replacingOccurrences(
-                    of: #"(\w):\s*"#,
-                    with: "$1 : ",
-                    options: .regularExpression
-                )
+                .replacing(/(\w):\s*/) { match in "\(match.1) : " }
 
             declaredParams = fixSameTypeConstraintParams(
                 declaredParams: declaredParams,
@@ -2337,11 +2338,7 @@ struct SwiftInterfaceBuilder: Sendable {
         let rawConstraints = String(genericClause[whereRange.upperBound...])
             .trimmingCharacters(in: .whitespaces)
         let cleanedConstraints = cleanedTypeName(rawConstraints, moduleName: moduleName)
-            .replacingOccurrences(
-                of: #"(\w):\s*"#,
-                with: "$1 : ",
-                options: .regularExpression
-            )
+            .replacing(/(\w):\s*/) { match in "\(match.1) : " }
 
         return cleanedConstraints.isEmpty ? "" : " where \(cleanedConstraints)"
     }
@@ -2358,9 +2355,9 @@ struct SwiftInterfaceBuilder: Sendable {
     }
 
     private func combinedWhereClause(_ lhs: String, _ rhs: String) -> String {
-        let lhsConstraints = lhs.replacingOccurrences(of: #"^\s*where\s+"#, with: "", options: .regularExpression)
+        let lhsConstraints = lhs.replacing(/^\s*where\s+/, with: "")
             .trimmingCharacters(in: .whitespaces)
-        let rhsConstraints = rhs.replacingOccurrences(of: #"^\s*where\s+"#, with: "", options: .regularExpression)
+        let rhsConstraints = rhs.replacing(/^\s*where\s+/, with: "")
             .trimmingCharacters(in: .whitespaces)
 
         switch (lhsConstraints.isEmpty, rhsConstraints.isEmpty) {
@@ -2376,10 +2373,7 @@ struct SwiftInterfaceBuilder: Sendable {
     }
 
     private func containsUnresolvedAssociatedTypeReference(_ string: String) -> Bool {
-        string.range(
-            of: #"\b[A-Z][0-9]*\.[A-Z][A-Za-z0-9_]*\b"#,
-            options: .regularExpression
-        ) != nil
+        string.contains(/\b[A-Z][0-9]*\.[A-Z][A-Za-z0-9_]*\b/)
     }
 
     private func containsUnrenderableExternalModuleReference(
@@ -2533,9 +2527,7 @@ struct SwiftInterfaceBuilder: Sendable {
     }
 
     private func isWordCharacter(_ character: Character) -> Bool {
-        character.unicodeScalars.allSatisfy { scalar in
-            CharacterSet.alphanumerics.contains(scalar) || scalar == "_"
-        }
+        character.isLetter || character.isNumber || character == "_"
     }
 
     private func extractedTypeName(from line: String, prefix: String) -> String? {
@@ -2613,6 +2605,55 @@ struct SwiftInterfaceBuilder: Sendable {
         }
 
         return maximumArity
+    }
+
+    /// Pre-computes generic arities for all declarations in a single pass over all fragments.
+    private func precomputedGenericArities(
+        declarations: [String: Declaration],
+        moduleName: String
+    ) -> [String: Int] {
+        // Build all needles: "ModuleName.TypeName<" for each declaration
+        let needles: [(needle: String, fullName: String)] = declarations.keys.map { fullName in
+            let needle = "\(moduleName.isEmpty ? "" : "\(moduleName).")\(fullName)<"
+            return (needle, fullName)
+        }
+        guard !needles.isEmpty else { return [:] }
+
+        // Collect all fragments once
+        var allFragments: [String] = []
+        for declaration in declarations.values {
+            allFragments.append(contentsOf: declaration.conformances)
+            allFragments.append(contentsOf: declaration.properties.lazy.map(\.rawType))
+            allFragments.append(contentsOf: declaration.initializers.lazy.map(\.rawSignature))
+            allFragments.append(contentsOf: declaration.methods.lazy.map(\.rawSignature))
+            allFragments.append(contentsOf: declaration.staticMethods.lazy.map(\.rawSignature))
+            allFragments.append(contentsOf: declaration.enumCases.lazy.compactMap(\.rawPayload))
+        }
+
+        var arityMap: [String: Int] = [:]
+
+        for fragment in allFragments {
+            for (needle, fullName) in needles {
+                guard let range = fragment.range(of: needle) else {
+                    continue
+                }
+                let openingIndex = fragment.index(before: range.upperBound)
+                guard let closingIndex = matchingClosingDelimiter(
+                    in: fragment,
+                    from: openingIndex,
+                    open: "<",
+                    close: ">"
+                ) else {
+                    continue
+                }
+                let rawArguments = String(fragment[fragment.index(after: openingIndex)..<closingIndex])
+                if let arguments = try? splitTopLevel(rawArguments) {
+                    arityMap[fullName] = max(arityMap[fullName, default: 0], arguments.count)
+                }
+            }
+        }
+
+        return arityMap
     }
 
     /// Returns the simple (unqualified) name from a dot-separated fully-qualified name.
@@ -2885,5 +2926,116 @@ struct SwiftInterfaceBuilder: Sendable {
             ? "\(architecture)-\(vendor)-\(platform)"
             : "\(architecture)-\(vendor)-\(platform)-\(suffix)"
         return "\(triple).swiftinterface"
+    }
+}
+
+// MARK: - Optimized string replacements for patterns requiring lookbehinds
+
+private extension String {
+    /// Replaces `A.X` (where X is [A-Z][0-9]?) with just `X`, only when not preceded by a word character.
+    /// Equivalent to: s/(?<!\w)A\.([A-Z][0-9]?)(?!\w)/$1/g
+    func replacingADotPattern() -> String {
+        guard self.contains("A.") else { return self }
+        var result = ""
+        result.reserveCapacity(count)
+        var i = startIndex
+        while i < endIndex {
+            let c = self[i]
+            if c == "A" {
+                let nextI = index(after: i)
+                if nextI < endIndex && self[nextI] == "." {
+                    // Check lookbehind: char before i must NOT be a word char
+                    let precededByWord = i > startIndex && {
+                        let prev = self[index(before: i)]
+                        return prev.isLetter || prev.isNumber || prev == "_"
+                    }()
+                    if !precededByWord {
+                        let dotNext = index(after: nextI)
+                        // Check lookahead: next char after dot must be [A-Z]
+                        if dotNext < endIndex && self[dotNext].isUppercase {
+                            let captureStart = dotNext
+                            var captureEnd = index(after: captureStart)
+                            // Optional digit after the uppercase letter
+                            if captureEnd < endIndex && self[captureEnd].isNumber {
+                                captureEnd = index(after: captureEnd)
+                            }
+                            // Check that char after capture is NOT a word char
+                            let followedByWord = captureEnd < endIndex && {
+                                let next = self[captureEnd]
+                                return next.isLetter || next.isNumber || next == "_"
+                            }()
+                            if !followedByWord {
+                                result += self[captureStart..<captureEnd]
+                                i = captureEnd
+                                continue
+                            }
+                        }
+                    }
+                }
+            }
+            result.append(c)
+            i = index(after: i)
+        }
+        return result
+    }
+
+    /// Replaces bare `Protocol` with `` `Protocol` ``, only when not preceded/followed by word chars or backticks.
+    /// Equivalent to: s/(?<![\w`])Protocol(?![\w`])/`Protocol`/g
+    func replacingProtocolKeyword() -> String {
+        let needle = "Protocol"
+        guard self.contains(needle) else { return self }
+        var result = ""
+        result.reserveCapacity(count + 4)
+        var searchStart = startIndex
+        while let range = self.range(of: needle, range: searchStart..<endIndex) {
+            // Check lookbehind
+            let precededByWordOrBacktick = range.lowerBound > startIndex && {
+                let prev = self[index(before: range.lowerBound)]
+                return prev.isLetter || prev.isNumber || prev == "_" || prev == "`"
+            }()
+            // Check lookahead
+            let followedByWordOrBacktick = range.upperBound < endIndex && {
+                let next = self[range.upperBound]
+                return next.isLetter || next.isNumber || next == "_" || next == "`"
+            }()
+            result += self[searchStart..<range.lowerBound]
+            if precededByWordOrBacktick || followedByWordOrBacktick {
+                result += needle
+            } else {
+                result += "`Protocol`"
+            }
+            searchStart = range.upperBound
+        }
+        result += self[searchStart...]
+        return result
+    }
+
+    /// Replaces `A.` with `Self.` only when not preceded by a word character.
+    /// Equivalent to: s/(?<!\w)A\./Self./g
+    func replacingSelfTypePattern() -> String {
+        guard self.contains("A.") else { return self }
+        var result = ""
+        result.reserveCapacity(count + 16)
+        var i = startIndex
+        while i < endIndex {
+            let c = self[i]
+            if c == "A" {
+                let nextI = index(after: i)
+                if nextI < endIndex && self[nextI] == "." {
+                    let precededByWord = i > startIndex && {
+                        let prev = self[index(before: i)]
+                        return prev.isLetter || prev.isNumber || prev == "_"
+                    }()
+                    if !precededByWord {
+                        result += "Self."
+                        i = index(after: nextI)
+                        continue
+                    }
+                }
+            }
+            result.append(c)
+            i = index(after: i)
+        }
+        return result
     }
 }

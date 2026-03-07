@@ -166,7 +166,7 @@ struct PropertyDescriptorTests {
             "Sample.Record.name.setter : (Swift.String) -> ()",
         ]
         let result = builder.parsePropertyDescriptor(
-            from: symbols[0], demangledSymbols: symbols, moduleName: "Sample"
+            from: symbols[0], sortedSymbols: .init(symbols), moduleName: "Sample"
         )
         #expect(result?.owner == "Record")
         #expect(result?.name == "name")
@@ -182,7 +182,7 @@ struct PropertyDescriptorTests {
             "Sample.Record.id.getter : Swift.Int",
         ]
         let result = builder.parsePropertyDescriptor(
-            from: symbols[0], demangledSymbols: symbols, moduleName: "Sample"
+            from: symbols[0], sortedSymbols: .init(symbols), moduleName: "Sample"
         )
         #expect(result?.owner == "Record")
         #expect(result?.name == "id")
@@ -198,7 +198,7 @@ struct PropertyDescriptorTests {
             "Sample.Registry.shared.setter : (Sample.Registry) -> ()",
         ]
         let result = builder.parsePropertyDescriptor(
-            from: symbols[0], demangledSymbols: symbols, moduleName: "Sample"
+            from: symbols[0], sortedSymbols: .init(symbols), moduleName: "Sample"
         )
         #expect(result?.owner == "Registry")
         #expect(result?.name == "shared")
@@ -213,7 +213,7 @@ struct PropertyDescriptorTests {
             "Sample.Box.value.getter : T",
         ]
         let result = builder.parsePropertyDescriptor(
-            from: symbols[0], demangledSymbols: symbols, moduleName: "Sample"
+            from: symbols[0], sortedSymbols: .init(symbols), moduleName: "Sample"
         )
         #expect(result?.rawType == "T")
         #expect(result?.hasSetter == false)
@@ -227,7 +227,7 @@ struct PropertyDescriptorTests {
             "Sample.Config.label.setter : (Swift.String?) -> ()",
         ]
         let result = builder.parsePropertyDescriptor(
-            from: symbols[0], demangledSymbols: symbols, moduleName: "Sample"
+            from: symbols[0], sortedSymbols: .init(symbols), moduleName: "Sample"
         )
         #expect(result?.rawType == "Swift.String?")
         #expect(result?.hasSetter == true)
@@ -240,7 +240,7 @@ struct PropertyDescriptorTests {
             "Sample.Manager.createdAt.getter : Foundation.Date",
         ]
         let result = builder.parsePropertyDescriptor(
-            from: symbols[0], demangledSymbols: symbols, moduleName: "Sample"
+            from: symbols[0], sortedSymbols: .init(symbols), moduleName: "Sample"
         )
         #expect(result?.rawType == "Foundation.Date")
     }
@@ -252,7 +252,7 @@ struct PropertyDescriptorTests {
             "Sample.Outer.Inner.value.getter : Swift.Int",
         ]
         let result = builder.parsePropertyDescriptor(
-            from: symbols[0], demangledSymbols: symbols, moduleName: "Sample"
+            from: symbols[0], sortedSymbols: .init(symbols), moduleName: "Sample"
         )
         #expect(result?.owner == "Outer.Inner")
         #expect(result?.name == "value")
@@ -265,7 +265,7 @@ struct PropertyDescriptorTests {
         ]
         #expect(
             builder.parsePropertyDescriptor(
-                from: symbols[0], demangledSymbols: symbols, moduleName: "Sample"
+                from: symbols[0], sortedSymbols: .init(symbols), moduleName: "Sample"
             ) == nil
         )
     }
@@ -275,7 +275,7 @@ struct PropertyDescriptorTests {
         #expect(
             builder.parsePropertyDescriptor(
                 from: "Sample.Record.name.getter : Swift.String",
-                demangledSymbols: [],
+                sortedSymbols: .init([]),
                 moduleName: "Sample"
             ) == nil
         )
@@ -286,7 +286,7 @@ struct PropertyDescriptorTests {
         #expect(
             builder.parsePropertyDescriptor(
                 from: "property descriptor for Sample.Record.name",
-                demangledSymbols: [],
+                sortedSymbols: .init([]),
                 moduleName: "Sample"
             ) == nil
         )
