@@ -1434,14 +1434,30 @@ struct SwiftInterfaceBuilder: Sendable {
         protocolNames
             .sorted { $0.count > $1.count }
             .reduce(typeName) { current, protocolName in
-                let escapedName = NSRegularExpression.escapedPattern(for: protocolName)
-                let pattern = #"(?<![\w.])(?<!any )\#(escapedName)(?![\w.])"#
-                return current.replacingOccurrences(
-                    of: pattern,
-                    with: "any \(protocolName)",
-                    options: .regularExpression
+                replacingProtocolLeaf(
+                    named: protocolName,
+                    in: current
                 )
             }
+    }
+
+    private func replacingProtocolLeaf(
+        named protocolName: String,
+        in string: String
+    ) -> String {
+        guard !protocolName.isEmpty else {
+            return string
+        }
+
+        return replacingLiteralOccurrences(of: protocolName, in: string) { range in
+            guard hasTypeNameBoundary(before: range.lowerBound, in: string),
+                  hasTypeNameBoundary(after: range.upperBound, in: string),
+                  !hasImmediatePrefix("any ", endingAt: range.lowerBound, in: string) else {
+                return String(string[range])
+            }
+
+            return "any \(protocolName)"
+        }
     }
 
     /// Parses an associated type descriptor symbol line.
@@ -2103,40 +2119,31 @@ struct SwiftInterfaceBuilder: Sendable {
         declaredParams: [String],
         whereClause: String
     ) -> [String] {
-        let sameTypePattern = #"(\w+)\s*==\s*(.+)"#
-        guard let sameTypeRegex = try? NSRegularExpression(pattern: sameTypePattern) else {
-            return declaredParams
-        }
-
+        let sameTypePattern = #/^\s*(\w+)\s*==\s*(.+?)\s*$/#
+        let identifierPattern = #/\b([A-Z][A-Za-z]*[0-9]+)\b/#
         let constraints = whereClause.components(separatedBy: ", ")
+        let declaredParamsSet = Set(declaredParams)
         var paramsToRemove: Set<String> = []
         var paramsToAdd: [String] = []
+        var paramsToAddSet: Set<String> = []
 
         for constraint in constraints {
-            let nsConstraint = constraint as NSString
-            guard let match = sameTypeRegex.firstMatch(
-                in: constraint,
-                range: NSRange(location: 0, length: nsConstraint.length)
-            ) else {
+            guard let match = constraint.wholeMatch(of: sameTypePattern) else {
                 continue
             }
 
-            let lhs = nsConstraint.substring(with: match.range(at: 1))
-            let rhs = nsConstraint.substring(with: match.range(at: 2))
+            let lhs = String(match.1)
+            let rhs = String(match.2)
 
-            guard declaredParams.contains(lhs) else {
+            guard declaredParamsSet.contains(lhs) else {
                 continue
             }
 
             // Find undeclared generic-param-like identifiers in the RHS
-            guard let identRegex = try? NSRegularExpression(pattern: #"\b([A-Z][A-Za-z]*[0-9]+)\b"#) else {
-                continue
-            }
-            let nsRhs = rhs as NSString
-            let rhsMatches = identRegex.matches(in: rhs, range: NSRange(location: 0, length: nsRhs.length))
-            let undeclaredParams = rhsMatches
-                .map { nsRhs.substring(with: $0.range(at: 1)) }
-                .filter { !declaredParams.contains($0) && !paramsToAdd.contains($0) }
+            let undeclaredParams = rhs.matches(of: identifierPattern)
+                .map { String($0.1) }
+                .filter { !declaredParamsSet.contains($0) }
+                .filter { paramsToAddSet.insert($0).inserted }
 
             if !undeclaredParams.isEmpty {
                 paramsToRemove.insert(lhs)
@@ -2213,12 +2220,7 @@ struct SwiftInterfaceBuilder: Sendable {
         }
 
         return packParameters.sorted().reduce(string) { result, parameter in
-            let escapedParameter = NSRegularExpression.escapedPattern(for: parameter)
-            return result.replacingOccurrences(
-                of: #"(?<!each )repeat \#(escapedParameter)\b"#,
-                with: "repeat each \(parameter)",
-                options: .regularExpression
-            )
+            replacingPackExpansionParameter(parameter, in: result)
         }
     }
 
@@ -2231,13 +2233,57 @@ struct SwiftInterfaceBuilder: Sendable {
         }
 
         return packParameters.sorted().reduce(whereClause) { result, parameter in
-            let escapedParameter = NSRegularExpression.escapedPattern(for: parameter)
-            return result.replacingOccurrences(
-                of: #"\b\#(escapedParameter)\s*:"#,
-                with: "repeat each \(parameter) :",
-                options: .regularExpression
-            )
+            replacingPackExpansionConstraintParameter(parameter, in: result)
         }
+    }
+
+    private func replacingPackExpansionParameter(
+        _ parameter: String,
+        in string: String
+    ) -> String {
+        let token = "repeat \(parameter)"
+        return replacingLiteralOccurrences(of: token, in: string) { range in
+            guard hasWordBoundary(after: range.upperBound, in: string) else {
+                return String(string[range])
+            }
+
+            return "repeat each \(parameter)"
+        }
+    }
+
+    private func replacingPackExpansionConstraintParameter(
+        _ parameter: String,
+        in string: String
+    ) -> String {
+        guard !parameter.isEmpty else {
+            return string
+        }
+
+        var result = ""
+        var searchStart = string.startIndex
+
+        while let range = string.range(
+            of: parameter,
+            range: searchStart..<string.endIndex
+        ) {
+            result += string[searchStart..<range.lowerBound]
+
+            guard hasWordBoundary(before: range.lowerBound, in: string),
+                  let replacementEnd = packConstraintReplacementEnd(
+                      in: string,
+                      startingAt: range.upperBound
+                  ) else {
+                result += string[range]
+                searchStart = range.upperBound
+                continue
+            }
+
+            result += "repeat each \(parameter) :"
+            searchStart = replacementEnd
+        }
+
+        result += string[searchStart...]
+        return result
     }
 
     private func removingGenericArguments(from string: String) -> String {
@@ -2373,17 +2419,123 @@ struct SwiftInterfaceBuilder: Sendable {
     }
 
     private func moduleLikePrefixes(in string: String) -> Set<String> {
-        guard let regex = try? NSRegularExpression(pattern: #"\b([A-Z_][A-Za-z0-9_]{1,}|os)\."#) else {
-            return []
-        }
-
-        let nsString = string as NSString
-        let range = NSRange(location: 0, length: nsString.length)
-        return Set(
-            regex.matches(in: string, range: range).map {
-                nsString.substring(with: $0.range(at: 1))
+        Set(
+            string.matches(of: #/\b([A-Z_][A-Za-z0-9_]{1,}|os)\./#).map {
+                String($0.1)
             }
         )
+    }
+
+    private func replacingLiteralOccurrences(
+        of literal: String,
+        in string: String,
+        replacement: (Range<String.Index>) -> String
+    ) -> String {
+        guard !literal.isEmpty else {
+            return string
+        }
+
+        var result = ""
+        var searchStart = string.startIndex
+
+        while let range = string.range(
+            of: literal,
+            range: searchStart..<string.endIndex
+        ) {
+            result += string[searchStart..<range.lowerBound]
+            result += replacement(range)
+            searchStart = range.upperBound
+        }
+
+        result += string[searchStart...]
+        return result
+    }
+
+    private func packConstraintReplacementEnd(
+        in string: String,
+        startingAt index: String.Index
+    ) -> String.Index? {
+        var cursor = index
+        while cursor < string.endIndex, string[cursor].isWhitespace {
+            cursor = string.index(after: cursor)
+        }
+
+        guard cursor < string.endIndex, string[cursor] == ":" else {
+            return nil
+        }
+
+        return string.index(after: cursor)
+    }
+
+    private func hasImmediatePrefix(
+        _ prefix: String,
+        endingAt upperBound: String.Index,
+        in string: String
+    ) -> Bool {
+        guard let lowerBound = string.index(
+            upperBound,
+            offsetBy: -prefix.count,
+            limitedBy: string.startIndex
+        ) else {
+            return false
+        }
+
+        return string[lowerBound..<upperBound] == prefix
+    }
+
+    private func hasTypeNameBoundary(
+        before index: String.Index,
+        in string: String
+    ) -> Bool {
+        guard index > string.startIndex else {
+            return true
+        }
+
+        let previous = string[string.index(before: index)]
+        return !isWordOrDot(previous)
+    }
+
+    private func hasTypeNameBoundary(
+        after index: String.Index,
+        in string: String
+    ) -> Bool {
+        guard index < string.endIndex else {
+            return true
+        }
+
+        return !isWordOrDot(string[index])
+    }
+
+    private func hasWordBoundary(
+        before index: String.Index,
+        in string: String
+    ) -> Bool {
+        guard index > string.startIndex else {
+            return true
+        }
+
+        return !isWordCharacter(string[string.index(before: index)])
+    }
+
+    private func hasWordBoundary(
+        after index: String.Index,
+        in string: String
+    ) -> Bool {
+        guard index < string.endIndex else {
+            return true
+        }
+
+        return !isWordCharacter(string[index])
+    }
+
+    private func isWordOrDot(_ character: Character) -> Bool {
+        character == "." || isWordCharacter(character)
+    }
+
+    private func isWordCharacter(_ character: Character) -> Bool {
+        character.unicodeScalars.allSatisfy { scalar in
+            CharacterSet.alphanumerics.contains(scalar) || scalar == "_"
+        }
     }
 
     private func extractedTypeName(from line: String, prefix: String) -> String? {

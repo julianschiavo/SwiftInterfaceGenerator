@@ -104,6 +104,22 @@ func renderedTypeNameUsesExistentialsForProtocolsAndOptionalProtocols() {
 }
 
 @Test
+func renderedTypeNameDoesNotDoubleWrapExistingExistentials() {
+    #expect(
+        utilityBuilder.renderedTypeName("any Greeter", protocolNames: ["Greeter"])
+            == "any Greeter"
+    )
+}
+
+@Test
+func renderedTypeNameDoesNotWrapProtocolNameWhenFollowedByMemberAccess() {
+    #expect(
+        utilityBuilder.renderedTypeName("Greeter.Output", protocolNames: ["Greeter"])
+            == "Greeter.Output"
+    )
+}
+
+@Test
 func escapedIdentifierEscapesSwiftKeywords() {
     #expect(utilityBuilder.escapedIdentifier("class") == "`class`")
     #expect(utilityBuilder.escapedIdentifier("Protocol") == "`Protocol`")
