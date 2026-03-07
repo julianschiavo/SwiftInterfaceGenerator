@@ -52,6 +52,81 @@ struct SubprocessCommandRunner: CommandRunning {
         arguments: [String],
         stdin: String? = nil
     ) async throws -> CommandResult {
+        let executable = await Self.preferredExecutablePath(for: executable)
+        let result = try await Self.execute(
+            executable: executable,
+            arguments: arguments,
+            stdin: stdin
+        )
+        let stdout = result.standardOutput ?? ""
+        let stderr = result.standardError ?? ""
+
+        if case .exited(let code) = result.terminationStatus, code == 0 {
+            return CommandResult(stdout: stdout, stderr: stderr)
+        }
+
+        throw SwiftInterfaceGeneratorError.commandFailed(
+            command: ([executable] + arguments).joined(separator: " "),
+            status: String(describing: result.terminationStatus),
+            stdout: stdout,
+            stderr: stderr
+        )
+    }
+
+    static func preferredExecutablePath(
+        for executable: String,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        isExecutableFile: (String) -> Bool = FileManager.default.isExecutableFile(atPath:),
+        xcrunLookup: @escaping @Sendable (String) async -> String? = Self.lookupExecutableInActiveXcode
+    ) async -> String {
+        guard executable == "swift-demangle", !executable.contains("/") else {
+            return executable
+        }
+
+        if let toolchainDirectory = environment["TOOLCHAIN_DIR"] {
+            let toolchainExecutable = URL(fileURLWithPath: toolchainDirectory, isDirectory: true)
+                .appendingPathComponent("usr/bin/\(executable)")
+                .path
+            if isExecutableFile(toolchainExecutable) {
+                return toolchainExecutable
+            }
+        }
+
+        if let resolvedExecutable = await xcrunLookup(executable),
+           isExecutableFile(resolvedExecutable) {
+            return resolvedExecutable
+        }
+
+        return executable
+    }
+
+    private static func lookupExecutableInActiveXcode(_ executable: String) async -> String? {
+        let xcrunPath = "/usr/bin/xcrun"
+        guard FileManager.default.isExecutableFile(atPath: xcrunPath) else {
+            return nil
+        }
+
+        do {
+            let result = try await execute(
+                executable: xcrunPath,
+                arguments: ["--find", executable],
+                stdin: nil
+            )
+            return result.standardOutput?
+                .split(whereSeparator: \.isNewline)
+                .map(String.init)
+                .first?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        } catch {
+            return nil
+        }
+    }
+
+    private static func execute(
+        executable: String,
+        arguments: [String],
+        stdin: String?
+    ) async throws -> CollectedResult<StringOutput<UTF8>, StringOutput<UTF8>> {
         let result: CollectedResult<StringOutput<UTF8>, StringOutput<UTF8>>
 
         if let stdin {
@@ -70,19 +145,6 @@ struct SubprocessCommandRunner: CommandRunning {
                 error: .string(limit: 8_388_608)
             )
         }
-
-        let stdout = result.standardOutput ?? ""
-        let stderr = result.standardError ?? ""
-
-        if case .exited(let code) = result.terminationStatus, code == 0 {
-            return CommandResult(stdout: stdout, stderr: stderr)
-        }
-
-        throw SwiftInterfaceGeneratorError.commandFailed(
-            command: ([executable] + arguments).joined(separator: " "),
-            status: String(describing: result.terminationStatus),
-            stdout: stdout,
-            stderr: stderr
-        )
+        return result
     }
 }

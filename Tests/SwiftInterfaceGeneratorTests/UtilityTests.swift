@@ -116,3 +116,51 @@ func normalizedModuleNameUsesFilenameWithoutExtensionWhenAvailable() {
             == "Fancy"
     )
 }
+
+@Test
+func subprocessCommandRunnerPrefersSwiftDemangleFromToolchainDirectory() async {
+    let resolvedExecutable = await SubprocessCommandRunner.preferredExecutablePath(
+        for: "swift-demangle",
+        environment: ["TOOLCHAIN_DIR": "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain"],
+        isExecutableFile: { path in
+            path == "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swift-demangle"
+        },
+        xcrunLookup: { _ in nil }
+    )
+
+    #expect(
+        resolvedExecutable
+            == "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swift-demangle"
+    )
+}
+
+@Test
+func subprocessCommandRunnerFallsBackToXcrunForSwiftDemangle() async {
+    let resolvedExecutable = await SubprocessCommandRunner.preferredExecutablePath(
+        for: "swift-demangle",
+        environment: [:],
+        isExecutableFile: { path in
+            path == "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swift-demangle"
+        },
+        xcrunLookup: { _ in
+            "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swift-demangle"
+        }
+    )
+
+    #expect(
+        resolvedExecutable
+            == "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swift-demangle"
+    )
+}
+
+@Test
+func subprocessCommandRunnerLeavesOtherExecutablesUnchanged() async {
+    let resolvedExecutable = await SubprocessCommandRunner.preferredExecutablePath(
+        for: "nm",
+        environment: ["TOOLCHAIN_DIR": "/tmp/toolchain"],
+        isExecutableFile: { _ in true },
+        xcrunLookup: { _ in "/tmp/toolchain/usr/bin/nm" }
+    )
+
+    #expect(resolvedExecutable == "nm")
+}
