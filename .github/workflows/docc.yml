@@ -1,0 +1,46 @@
+name: DocC
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-26
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build documentation
+        run: |
+          swift package generate-documentation \
+            --target SwiftInterfaceGenerator \
+            --disable-indexing \
+            --transform-for-static-hosting \
+            --hosting-base-path SwiftInterfaceGenerator \
+            --output-path docs
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ github.event.deployment.payload.web_url }}
+
+    steps:
+      - name: Deploy to GitHub Pages
+        uses: actions/deploy-pages@v4

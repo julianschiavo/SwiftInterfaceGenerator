@@ -1,0 +1,118 @@
+import Foundation
+import Testing
+@testable import SwiftInterfaceGenerator
+
+private let utilityBuilder = SwiftInterfaceBuilder()
+
+@Test
+func splitTopLevelKeepsNestedCommasTogether() throws {
+    let parts = try utilityBuilder.splitTopLevel(
+        "value: Swift.Result<(Swift.Int, Swift.String), Swift.Error>, callback: ((Swift.Int, Swift.String)) -> Swift.Void, options: [Swift.String]"
+    )
+
+    #expect(
+        parts
+            == [
+                "value: Swift.Result<(Swift.Int, Swift.String), Swift.Error>",
+                "callback: ((Swift.Int, Swift.String)) -> Swift.Void",
+                "options: [Swift.String]",
+            ]
+    )
+}
+
+@Test
+func splitTopLevelRejectsUnbalancedInput() throws {
+    do {
+        _ = try utilityBuilder.splitTopLevel("value: Swift.Array<Swift.String")
+        #expect(Bool(false))
+    } catch let error as SwiftInterfaceGeneratorError {
+        guard case .unexpectedOutput(let message) = error else {
+            #expect(Bool(false))
+            return
+        }
+
+        #expect(message == "Unbalanced argument list: value: Swift.Array<Swift.String")
+    }
+}
+
+@Test
+func renderedArgumentListPreservesClosureAndTupleTypes() throws {
+    let rendered = try utilityBuilder.renderedArgumentList(
+        "value: (Swift.Int, Swift.String), callback: ((Swift.Int) -> Swift.String)",
+        protocolNames: [],
+        moduleName: "Fixture"
+    )
+
+    #expect(
+        rendered
+            == "value: (Swift.Int, Swift.String), callback: ((Swift.Int) -> Swift.String)"
+    )
+}
+
+@Test
+func renderedArgumentListTreatsNestedTupleLabelsAsPartOfUnlabeledClosureParameter() throws {
+    let rendered = try utilityBuilder.renderedArgumentList(
+        "(Demo.Element, [Demo.Element], (element: Demo.Element, content: Demo.Window)?) -> ()",
+        protocolNames: [],
+        moduleName: "Demo"
+    )
+
+    #expect(
+        rendered
+            == "_: (Element, [Element], (element: Element, content: Window)?) -> ()"
+    )
+}
+
+@Test
+func cleanedTypeNameRewritesModulePrefixesAndCBridges() {
+    #expect(
+        utilityBuilder.cleanedTypeName("__owned Fixture.Token<__C.CGRect>", moduleName: "Fixture")
+            == "Token<CoreGraphics.CGRect>"
+    )
+    #expect(
+        utilityBuilder.cleanedTypeName("__C.audit_token_t")
+            == "Darwin.audit_token_t"
+    )
+}
+
+@Test
+func renderedTypeNameUsesExistentialsForProtocolsAndOptionalProtocols() {
+    #expect(
+        utilityBuilder.renderedTypeName("Fixture.Greeter", protocolNames: ["Greeter"], moduleName: "Fixture")
+            == "any Greeter"
+    )
+    #expect(
+        utilityBuilder.renderedTypeName("Fixture.Greeter?", protocolNames: ["Greeter"], moduleName: "Fixture")
+            == "(any Greeter)?"
+    )
+}
+
+@Test
+func escapedIdentifierEscapesSwiftKeywords() {
+    #expect(utilityBuilder.escapedIdentifier("class") == "`class`")
+    #expect(utilityBuilder.escapedIdentifier("value") == "value")
+}
+
+@Test
+func swiftinterfaceFilenameNormalizesPlatformVersions() {
+    #expect(
+        utilityBuilder.swiftinterfaceFilename(for: "arm64-apple-ios18.2-simulator")
+            == "arm64-apple-ios-simulator.swiftinterface"
+    )
+    #expect(
+        utilityBuilder.swiftinterfaceFilename(for: "x86_64-apple-macosx15.0")
+            == "x86_64-apple-macosx.swiftinterface"
+    )
+}
+
+@Test
+func normalizedModuleNameUsesFilenameWithoutExtensionWhenAvailable() {
+    #expect(
+        utilityBuilder.normalizedModuleName(for: URL(fileURLWithPath: "/tmp/Fancy.framework/Fancy"))
+            == "Fancy"
+    )
+    #expect(
+        utilityBuilder.normalizedModuleName(for: URL(fileURLWithPath: "/tmp/Fancy.dylib"))
+            == "Fancy"
+    )
+}
