@@ -161,6 +161,36 @@ struct MakeInterfaceTests {
     }
 
     @Test
+    func protocolInheritanceFromBaseConformanceDescriptors() {
+        let interface = renderingBuilder.makeInterface(
+            demangledSymbols: [
+                "protocol descriptor for Mod.Named",
+                "base conformance descriptor for Mod.Named: Swift.Sendable",
+                "base conformance descriptor for Mod.Named: Foundation.Identifiable",
+            ],
+            targetTriple: "arm64-apple-macosx15.0",
+            moduleName: "Mod",
+            compilerVersion: "Test"
+        )
+
+        #expect(
+            normalizedInterface(interface)
+                == normalizedInterface(
+                    """
+                // swift-interface-format-version: 1.0
+                // swift-compiler-version: Test
+                // swift-module-flags: -target arm64-apple-macosx15.0 -enable-library-evolution -module-name Mod
+                import Swift
+                import Foundation
+
+                public protocol Named: Swift.Sendable, Foundation.Identifiable {
+                }
+                """
+                )
+        )
+    }
+
+    @Test
     func enumWithMixedCases() {
         let interface = renderingBuilder.makeInterface(
             demangledSymbols: [
@@ -223,6 +253,36 @@ struct MakeInterfaceTests {
         )
 
         #expect(normalizedInterface(interface).contains("public final class Controller"))
+    }
+
+    @Test
+    func rendersSubscriptsFromPropertyDescriptors() {
+        let interface = renderingBuilder.makeInterface(
+            demangledSymbols: [
+                "nominal type descriptor for Mod.Buffer",
+                "Mod.Buffer.subscript.getter : (Swift.Int) -> Swift.String",
+                "property descriptor for Mod.Buffer.subscript(Swift.Int) -> Swift.String",
+            ],
+            targetTriple: "arm64-apple-macosx15.0",
+            moduleName: "Mod",
+            compilerVersion: "Test"
+        )
+
+        #expect(
+            normalizedInterface(interface)
+                == normalizedInterface(
+                    """
+                // swift-interface-format-version: 1.0
+                // swift-compiler-version: Test
+                // swift-module-flags: -target arm64-apple-macosx15.0 -enable-library-evolution -module-name Mod
+                import Swift
+
+                public struct Buffer {
+                  public subscript(_: Swift.Int) -> Swift.String { get }
+                }
+                """
+                )
+        )
     }
 
     @Test

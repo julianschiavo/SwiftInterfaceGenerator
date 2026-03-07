@@ -25,6 +25,14 @@ struct SwiftInterfaceBuilder: Sendable {
             let order: Int
         }
 
+        /// A discovered subscript requirement or member on a type.
+        struct Subscript: Sendable, Hashable {
+            let rawArguments: String
+            let rawReturnType: String
+            let hasSetter: Bool
+            let order: Int
+        }
+
         /// A discovered method or initializer on a type.
         struct Callable: Sendable, Hashable {
             let rawSignature: String
@@ -48,6 +56,7 @@ struct SwiftInterfaceBuilder: Sendable {
         var conformances: [String] = []
         var associatedTypes: [String] = []
         var properties: [Property] = []
+        var subscripts: [Subscript] = []
         var initializers: [Callable] = []
         var methods: [Callable] = []
         var staticMethods: [Callable] = []
@@ -75,6 +84,16 @@ struct SwiftInterfaceBuilder: Sendable {
                 return
             }
             properties.append(property)
+        }
+
+        /// Adds a subscript, deduplicating by argument and return type.
+        mutating func addSubscript(_ subscriptMember: Subscript) {
+            guard !subscripts.contains(where: {
+                $0.rawArguments == subscriptMember.rawArguments && $0.rawReturnType == subscriptMember.rawReturnType
+            }) else {
+                return
+            }
+            subscripts.append(subscriptMember)
         }
 
         /// Adds an initializer, deduplicating by raw signature.
@@ -228,6 +247,31 @@ struct SwiftInterfaceBuilder: Sendable {
             if let (owner, conformance) = parseConformanceDescriptor(from: line, moduleName: moduleName) {
                 var value = declaration(named: owner, order: order)
                 value.addConformance(conformance)
+                setDeclaration(value)
+                continue
+            }
+
+            if let (owner, conformance) = parseBaseConformanceDescriptor(from: line, moduleName: moduleName) {
+                var value = declaration(named: owner, order: order)
+                value.addConformance(conformance)
+                setDeclaration(value)
+                continue
+            }
+
+            if let subscriptMember = parseSubscriptDescriptor(
+                from: line,
+                demangledSymbols: demangledSymbols,
+                moduleName: moduleName
+            ) {
+                var value = declaration(named: subscriptMember.owner, order: order)
+                value.addSubscript(
+                    Declaration.Subscript(
+                        rawArguments: subscriptMember.rawArguments,
+                        rawReturnType: subscriptMember.rawReturnType,
+                        hasSetter: subscriptMember.hasSetter,
+                        order: order
+                    )
+                )
                 setDeclaration(value)
                 continue
             }
@@ -537,6 +581,23 @@ struct SwiftInterfaceBuilder: Sendable {
             let accessors = property.hasSetter ? "{ get set }" : "{ get }"
             body.append(
                 "\(indent)  \(memberAccessPrefix)\(property.isStatic ? "static " : "")var \(escapedIdentifier(property.name)): \(renderedType) \(accessors)"
+            )
+        }
+
+        for subscriptMember in declaration.subscripts.sorted(by: { $0.order < $1.order }) {
+            let renderedArguments = (try? renderedArgumentList(
+                subscriptMember.rawArguments,
+                protocolNames: protocolNames,
+                moduleName: moduleName
+            )) ?? subscriptMember.rawArguments
+            let renderedReturnType = renderedTypeName(
+                subscriptMember.rawReturnType,
+                protocolNames: protocolNames,
+                moduleName: moduleName
+            )
+            let accessors = subscriptMember.hasSetter ? "{ get set }" : "{ get }"
+            body.append(
+                "\(indent)  \(memberAccessPrefix)subscript(\(renderedArguments)) -> \(renderedReturnType) \(accessors)"
             )
         }
 
@@ -1107,6 +1168,37 @@ struct SwiftInterfaceBuilder: Sendable {
         return (owner, conformance)
     }
 
+    /// Parses a protocol base conformance descriptor symbol line.
+    ///
+    /// Matches lines like `"base conformance descriptor for Module.Protocol: Swift.Sendable"`
+    /// and extracts the inheriting protocol name and inherited protocol.
+    ///
+    /// - Parameters:
+    ///   - line: The demangled symbol line to parse.
+    ///   - moduleName: The module name prefix to match.
+    /// - Returns: A tuple of `(owner, conformance)`, or `nil` if the line doesn't match.
+    func parseBaseConformanceDescriptor(
+        from line: String,
+        moduleName: String
+    ) -> (owner: String, conformance: String)? {
+        let prefix = "base conformance descriptor for \(moduleName)."
+        guard line.hasPrefix(prefix) else {
+            return nil
+        }
+
+        let remainder = String(line.dropFirst(prefix.count))
+        guard let separator = remainder.range(of: ": ") else {
+            return nil
+        }
+
+        var owner = String(remainder[..<separator.lowerBound])
+        if let angleBracket = owner.firstIndex(of: "<") {
+            owner = String(owner[..<angleBracket])
+        }
+        let conformance = String(remainder[separator.upperBound...])
+        return (owner, conformance)
+    }
+
     /// Parses a property descriptor symbol line.
     ///
     /// Matches lines like `"property descriptor for Module.Type.propertyName : Swift.String"`
@@ -1164,6 +1256,70 @@ struct SwiftInterfaceBuilder: Sendable {
             name: member.name,
             rawType: rawType,
             isStatic: isStatic,
+            hasSetter: hasSetter
+        )
+    }
+
+    /// Parses a subscript descriptor symbol line.
+    ///
+    /// Matches lines like `"property descriptor for Module.Type.subscript(Swift.Int) -> Swift.String"`
+    /// and extracts the owning type, argument list, result type, and setter availability.
+    ///
+    /// - Parameters:
+    ///   - line: The demangled symbol line to parse.
+    ///   - demangledSymbols: The full list of demangled symbols (for getter/setter detection).
+    ///   - moduleName: The module name prefix to match.
+    /// - Returns: A tuple of subscript metadata, or `nil` if the line doesn't match.
+    func parseSubscriptDescriptor(
+        from line: String,
+        demangledSymbols: [String],
+        moduleName: String
+    ) -> (owner: String, rawArguments: String, rawReturnType: String, hasSetter: Bool)? {
+        let prefix = "property descriptor for \(moduleName)."
+        guard line.hasPrefix(prefix) else {
+            return nil
+        }
+
+        let remainder = String(line.dropFirst(prefix.count))
+        let openingParenthesis: String.Index
+        if let subscriptRange = remainder.range(of: ".subscript(") {
+            openingParenthesis = remainder.index(before: subscriptRange.upperBound)
+        } else {
+            return nil
+        }
+        guard
+            let closingParenthesis = matchingClosingParenthesis(
+                in: remainder,
+                from: openingParenthesis
+            ),
+            let subscriptRange = remainder.range(of: ".subscript("),
+            let returnArrow = remainder.range(
+                of: " -> ",
+                range: remainder.index(after: closingParenthesis)..<remainder.endIndex
+            )
+        else {
+            return nil
+        }
+
+        let owner = String(remainder[..<subscriptRange.lowerBound])
+        let rawArguments = String(remainder[subscriptRange.upperBound..<closingParenthesis])
+        let rawReturnType = String(remainder[returnArrow.upperBound...])
+
+        let getterPrefix = "\(moduleName).\(owner).subscript.getter : "
+        let setterPrefix = "\(moduleName).\(owner).subscript.setter : "
+        let dispatchSetterPrefix = "dispatch thunk of \(moduleName).\(owner).subscript.setter : "
+
+        let hasSetter = demangledSymbols.contains(where: { $0.hasPrefix(setterPrefix) })
+            || demangledSymbols.contains(where: { $0.hasPrefix(dispatchSetterPrefix) })
+        let hasGetter = demangledSymbols.contains(where: { $0.hasPrefix(getterPrefix) })
+        guard hasGetter else {
+            return nil
+        }
+
+        return (
+            owner: owner,
+            rawArguments: rawArguments,
+            rawReturnType: rawReturnType,
             hasSetter: hasSetter
         )
     }
