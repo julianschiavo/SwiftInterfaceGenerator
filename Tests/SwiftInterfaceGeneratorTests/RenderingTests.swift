@@ -1389,7 +1389,7 @@ struct ComplexRenderingTests {
         )
 
         let norm = normalizedInterface(interface)
-        #expect(norm.contains("var box: any CodableBox<Self.Box>.Type { get }"))
+        #expect(norm.contains("var box: any CodableBox.Type { get }"))
         #expect(norm.contains("public protocol AnyCodableBox {"))
     }
 

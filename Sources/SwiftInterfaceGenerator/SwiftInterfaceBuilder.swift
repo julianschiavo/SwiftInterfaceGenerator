@@ -1832,22 +1832,32 @@ struct SwiftInterfaceBuilder: Sendable {
             .components(separatedBy: "==")
             .map { $0.trimmingCharacters(in: .whitespaces) }
 
-        guard parts.count == 2, parts[0] == parts[1], !parts[0].isEmpty else {
-            return nil
-        }
-        guard let firstCharacter = parts[0].first, firstCharacter.isUppercase else {
-            return nil
-        }
-        let replacement = parts[0]
-        let leading = replacement.split(separator: ".").first ?? ""
-        if leading == "Self" {
-            return "<\(replacement)>"
-        }
-        guard leading.first?.isUppercase == true else {
+        guard parts.count == 2 else {
             return nil
         }
 
-        return "<\(replacement)>"
+        let left = parts[0]
+        let right = parts[1]
+
+        if left == right {
+            if left.hasPrefix("Self.") {
+                return "<\(left)>"
+            }
+            guard let firstCharacter = left.first, firstCharacter.isUppercase else {
+                return nil
+            }
+            return ""
+        }
+
+        let selfTypePrefix = "Self."
+        if left.hasPrefix(selfTypePrefix), let firstCharacter = right.first, firstCharacter.isUppercase {
+            return "<\(right)>"
+        }
+        if right.hasPrefix(selfTypePrefix), let firstCharacter = left.first, firstCharacter.isUppercase {
+            return "<\(left)>"
+        }
+
+        return nil
     }
 
     private func replacingDemanglerPackSyntax(in string: String) -> String {
