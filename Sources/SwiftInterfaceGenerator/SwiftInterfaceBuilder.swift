@@ -734,6 +734,10 @@ struct SwiftInterfaceBuilder: Sendable {
                         }
                         let nestedName = String(rawFragment[prefixRange.upperBound..<nameEnd])
                         let fullName = "\(parentName).\(nestedName)"
+                        if nestedName == "Type", !declaredNames.contains(fullName) {
+                            searchStart = nameEnd
+                            continue
+                        }
                         if !declaredNames.contains(fullName), stubs[fullName] == nil {
                             var stub = Declaration(
                                 fullName: fullName,
@@ -1044,8 +1048,9 @@ struct SwiftInterfaceBuilder: Sendable {
             guard cleanedTypeName(rawType, moduleName: moduleName) != "some" else {
                 continue
             }
-            let renderedType = renderedTypeName(
+            let renderedType = renderedDeclaredTypeName(
                 rawType,
+                declarations: declarations,
                 protocolNames: protocolNames,
                 moduleName: moduleName
             )
@@ -1237,8 +1242,9 @@ struct SwiftInterfaceBuilder: Sendable {
             guard cleanedTypeName(rawType, moduleName: moduleName) != "some" else {
                 continue
             }
-            let renderedType = renderedTypeName(
+            let renderedType = renderedDeclaredTypeName(
                 rawType,
+                declarations: declarations,
                 protocolNames: protocolNames,
                 moduleName: moduleName
             )
@@ -1490,8 +1496,9 @@ struct SwiftInterfaceBuilder: Sendable {
             guard cleanedTypeName(rawType, moduleName: moduleName) != "some" else {
                 continue
             }
-            let renderedType = renderedTypeName(
+            let renderedType = renderedDeclaredTypeName(
                 rawType,
+                declarations: declarations,
                 protocolNames: protocolNames,
                 moduleName: moduleName
             )
@@ -1612,6 +1619,24 @@ struct SwiftInterfaceBuilder: Sendable {
             .split(separator: ".")
             .map { escapedIdentifier(String($0)) }
             .joined(separator: ".")
+    }
+
+    private func renderedDeclaredTypeName(
+        _ rawTypeName: String,
+        declarations: [String: Declaration],
+        protocolNames: Set<String>,
+        moduleName: String
+    ) -> String {
+        let cleaned = cleanedTypeName(rawTypeName, moduleName: moduleName)
+        if let declaration = declarations[cleaned], declaration.resolvedKind != .protocol {
+            return renderedQualifiedDeclarationName(cleaned, moduleName: moduleName)
+        }
+
+        return renderedTypeName(
+            rawTypeName,
+            protocolNames: protocolNames,
+            moduleName: moduleName
+        )
     }
 
     /// Renders the conformance clause (e.g. `: Hashable, Codable`) for a declaration.
@@ -4965,6 +4990,7 @@ struct SwiftInterfaceBuilder: Sendable {
         "throws",
         "true",
         "try",
+        "Type",
         "typealias",
         "var",
         "while",

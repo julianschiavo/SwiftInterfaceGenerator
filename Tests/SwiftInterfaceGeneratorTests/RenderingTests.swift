@@ -1873,6 +1873,46 @@ struct ComplexRenderingTests {
     }
 
     @Test
+    func typeNamedNestedTypesAreEscapedInDeclarationsAndTypeReferences() {
+        let interface = renderingBuilder.makeInterface(
+            demangledSymbols: [
+                "nominal type descriptor for Mod.LinkDestination",
+                "nominal type descriptor for Mod.LinkDestination.Configuration",
+                "nominal type descriptor for Mod.LinkDestination.Configuration.Type",
+                "property descriptor for Mod.LinkDestination.Configuration.kind : Mod.LinkDestination.Configuration.Type",
+                "Mod.LinkDestination.Configuration.kind.getter : Mod.LinkDestination.Configuration.Type",
+            ],
+            targetTriple: "arm64-apple-macosx15.0",
+            moduleName: "Mod",
+            compilerVersion: "Test"
+        )
+
+        let norm = normalizedInterface(interface)
+        #expect(norm.contains("public struct `Type` {"))
+        #expect(norm.contains("public var kind: LinkDestination.Configuration.`Type` { get }"))
+    }
+
+    @Test
+    func genuineMetatypeSyntaxRemainsUnescaped() {
+        let interface = renderingBuilder.makeInterface(
+            demangledSymbols: [
+                "nominal type descriptor for Mod.LinkDestination",
+                "nominal type descriptor for Mod.LinkDestination.Configuration",
+                "property descriptor for Mod.LinkDestination.factory : Mod.LinkDestination.Configuration.Type",
+                "Mod.LinkDestination.factory.getter : Mod.LinkDestination.Configuration.Type",
+            ],
+            targetTriple: "arm64-apple-macosx15.0",
+            moduleName: "Mod",
+            compilerVersion: "Test"
+        )
+
+        let norm = normalizedInterface(interface)
+        #expect(!norm.contains("public struct `Type` {"))
+        #expect(norm.contains("public var factory: LinkDestination.Configuration.Type { get }"))
+        #expect(!norm.contains("public var factory: LinkDestination.Configuration.`Type` { get }"))
+    }
+
+    @Test
     func keywordNamedMembersAreBackticked() {
         let interface = renderingBuilder.makeInterface(
             demangledSymbols: [
