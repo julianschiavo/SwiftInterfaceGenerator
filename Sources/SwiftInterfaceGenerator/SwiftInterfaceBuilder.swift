@@ -540,12 +540,12 @@ struct SwiftInterfaceBuilder: Sendable {
         compilerVersion: String
     ) -> String {
         let protocolNames = Set(
-            declarations.values.lazy
+            declarations.values
                 .filter { $0.resolvedKind == .protocol }
                 .map(\.fullName)
         )
         let knownTypeComponents = Set(
-            declarations.keys.lazy.flatMap { $0.split(separator: ".").lazy.map(String.init) }
+            declarations.keys.flatMap { $0.split(separator: ".").map(String.init) }
         )
 
         // Pre-compute children map: parent -> sorted child names (P4 optimization)
@@ -943,7 +943,7 @@ struct SwiftInterfaceBuilder: Sendable {
 
     /// Infers generic parameter names for a declaration by scanning its members.
     ///
-    /// Uses ``inferredGenericArity(for:declarations:moduleName:)`` to determine how many
+    /// Uses the pre-computed generic arity map to determine how many
     /// generic parameters the type has, then scans property types, method signatures, and
     /// enum payloads for unrecognized tokens that likely represent generic parameter names.
     /// Falls back to synthetic names (`T0`, `T1`, ...) if not enough are discovered.
@@ -1051,7 +1051,7 @@ struct SwiftInterfaceBuilder: Sendable {
     ) -> [String] {
         let declarations = discoverDeclarations(from: demangledSymbols, moduleName: moduleName)
         let knownTypeComponents = Set(
-            declarations.keys.lazy.flatMap { $0.split(separator: ".").lazy.map(String.init) }
+            declarations.keys.flatMap { $0.split(separator: ".").map(String.init) }
         )
 
         return discoveredImports(
@@ -1069,11 +1069,11 @@ struct SwiftInterfaceBuilder: Sendable {
         var rawFragments: [String] = []
         for declaration in declarations.values.sorted(by: { $0.order < $1.order }) {
             rawFragments.append(contentsOf: declaration.conformances)
-            rawFragments.append(contentsOf: declaration.initializers.lazy.map(\.rawSignature))
-            rawFragments.append(contentsOf: declaration.methods.lazy.map(\.rawSignature))
-            rawFragments.append(contentsOf: declaration.staticMethods.lazy.map(\.rawSignature))
-            rawFragments.append(contentsOf: declaration.properties.lazy.map(\.rawType))
-            rawFragments.append(contentsOf: declaration.enumCases.lazy.compactMap(\.rawPayload))
+            rawFragments.append(contentsOf: declaration.initializers.map(\.rawSignature))
+            rawFragments.append(contentsOf: declaration.methods.map(\.rawSignature))
+            rawFragments.append(contentsOf: declaration.staticMethods.map(\.rawSignature))
+            rawFragments.append(contentsOf: declaration.properties.map(\.rawType))
+            rawFragments.append(contentsOf: declaration.enumCases.compactMap(\.rawPayload))
         }
 
         var modules: [String] = []
@@ -2557,58 +2557,6 @@ struct SwiftInterfaceBuilder: Sendable {
         return declarations[candidate] == nil ? nil : candidate
     }
 
-    /// Infers the number of generic parameters a type has by scanning usage across all declarations.
-    ///
-    /// Looks for patterns like `"Module.TypeName<A, B>"` in conformances, property types,
-    /// method signatures, and enum payloads to determine the maximum observed arity.
-    ///
-    /// - Parameters:
-    ///   - fullName: The type name to check for generic usage.
-    ///   - declarations: All declarations to scan.
-    ///   - moduleName: The module name for building the search needle.
-    /// - Returns: The maximum observed generic arity, or 0 if no generic usage is found.
-    private func inferredGenericArity(
-        for fullName: String,
-        declarations: [String: Declaration],
-        moduleName: String = ""
-    ) -> Int {
-        let needle = "\(moduleName.isEmpty ? "" : "\(moduleName).")\(fullName)<"
-        var maximumArity = 0
-
-        for declaration in declarations.values {
-            let fragments =
-                declaration.conformances +
-                declaration.properties.map(\.rawType) +
-                declaration.initializers.map(\.rawSignature) +
-                declaration.methods.map(\.rawSignature) +
-                declaration.staticMethods.map(\.rawSignature) +
-                declaration.enumCases.compactMap(\.rawPayload)
-
-            for fragment in fragments {
-                guard let range = fragment.range(of: needle) else {
-                    continue
-                }
-
-                let openingIndex = fragment.index(before: range.upperBound)
-                guard let closingIndex = matchingClosingDelimiter(
-                    in: fragment,
-                    from: openingIndex,
-                    open: "<",
-                    close: ">"
-                ) else {
-                    continue
-                }
-
-                let rawArguments = String(fragment[fragment.index(after: openingIndex)..<closingIndex])
-                if let arguments = try? splitTopLevel(rawArguments) {
-                    maximumArity = max(maximumArity, arguments.count)
-                }
-            }
-        }
-
-        return maximumArity
-    }
-
     /// Pre-computes generic arities for all declarations in a single pass over all fragments.
     private func precomputedGenericArities(
         declarations: [String: Declaration],
@@ -2625,11 +2573,11 @@ struct SwiftInterfaceBuilder: Sendable {
         var allFragments: [String] = []
         for declaration in declarations.values {
             allFragments.append(contentsOf: declaration.conformances)
-            allFragments.append(contentsOf: declaration.properties.lazy.map(\.rawType))
-            allFragments.append(contentsOf: declaration.initializers.lazy.map(\.rawSignature))
-            allFragments.append(contentsOf: declaration.methods.lazy.map(\.rawSignature))
-            allFragments.append(contentsOf: declaration.staticMethods.lazy.map(\.rawSignature))
-            allFragments.append(contentsOf: declaration.enumCases.lazy.compactMap(\.rawPayload))
+            allFragments.append(contentsOf: declaration.properties.map(\.rawType))
+            allFragments.append(contentsOf: declaration.initializers.map(\.rawSignature))
+            allFragments.append(contentsOf: declaration.methods.map(\.rawSignature))
+            allFragments.append(contentsOf: declaration.staticMethods.map(\.rawSignature))
+            allFragments.append(contentsOf: declaration.enumCases.compactMap(\.rawPayload))
         }
 
         var arityMap: [String: Int] = [:]
