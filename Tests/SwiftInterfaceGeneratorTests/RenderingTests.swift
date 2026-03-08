@@ -600,6 +600,7 @@ struct MakeInterfaceTests {
                 "Mod.Vector.x.getter : Swift.Double",
                 "static Mod.Vector.+ infix(Mod.Vector, Mod.Vector) -> Mod.Vector",
                 "static Mod.Vector.prefix -(Mod.Vector) -> Mod.Vector",
+                "static Mod.Vector.- prefix(Mod.Vector) -> Mod.Vector",
             ],
             targetTriple: "arm64-apple-macosx15.0",
             moduleName: "Mod",
@@ -1474,6 +1475,50 @@ struct ComplexRenderingTests {
         #expect(norm.contains("case failed"))
         #expect(norm.contains("case possible(A?)"))
         #expect(!norm.contains("case ended<A>"))
+    }
+
+    @Test
+    func genericEnumCasesWithDottedConstraintsStayAttachedToNestedOwner() {
+        let interface = renderingBuilder.makeInterface(
+            demangledSymbols: [
+                "nominal type descriptor for Mod.InsertedPlaceholderCollection",
+                "nominal type descriptor for Mod.InsertedPlaceholderCollection.Source",
+                "enum case for Mod.InsertedPlaceholderCollection.Source.placeholder<A, B where A: Swift.Collection, B: Swift.Collection, A.Element == B.Element>(Mod.InsertedPlaceholderCollection<A, B>.Source.Type) -> (B.Index) -> Mod.InsertedPlaceholderCollection<A, B>.Source",
+                "enum case for Mod.InsertedPlaceholderCollection.Source.base<A, B where A: Swift.Collection, B: Swift.Collection, A.Element == B.Element>(Mod.InsertedPlaceholderCollection<A, B>.Source.Type) -> (A.Index) -> Mod.InsertedPlaceholderCollection<A, B>.Source",
+            ],
+            targetTriple: "arm64-apple-macosx15.0",
+            moduleName: "Mod",
+            compilerVersion: "Test"
+        )
+
+        let norm = normalizedInterface(interface)
+        #expect(norm.contains("public struct InsertedPlaceholderCollection<A, B> {"))
+        #expect(norm.contains("public enum Source {"))
+        #expect(norm.contains("case placeholder(B.Index)"))
+        #expect(norm.contains("case base(A.Index)"))
+        #expect(!norm.contains("case placeholder<A, B"))
+        #expect(!norm.contains("public enum Element == B"))
+    }
+
+    @Test
+    func primaryAssociatedTypeSameTypeExistentialsUseArgumentSyntax() {
+        let interface = renderingBuilder.makeInterface(
+            demangledSymbols: [
+                "nominal type descriptor for Mod.BreadthFirstSearchEvaluation",
+                "property descriptor for static Mod.BreadthFirstSearchEvaluation.continue : Mod.BreadthFirstSearchEvaluation<A, B>",
+                "static Mod.BreadthFirstSearchEvaluation.continue.getter : Mod.BreadthFirstSearchEvaluation<A, B>",
+                "enum case for Mod.BreadthFirstSearchEvaluation.stop<A, B>(Mod.BreadthFirstSearchEvaluation<A, B>.Type) -> Mod.BreadthFirstSearchEvaluation<A, B>",
+                "enum case for Mod.BreadthFirstSearchEvaluation.found<A, B>(Mod.BreadthFirstSearchEvaluation<A, B>.Type) -> (B) -> Mod.BreadthFirstSearchEvaluation<A, B>",
+                "enum case for Mod.BreadthFirstSearchEvaluation.continue<A, B>(Mod.BreadthFirstSearchEvaluation<A, B>.Type) -> (any Swift.Sequence<Self.Element == A>) -> Mod.BreadthFirstSearchEvaluation<A, B>",
+            ],
+            targetTriple: "arm64-apple-macosx15.0",
+            moduleName: "Mod",
+            compilerVersion: "Test"
+        )
+
+        let norm = normalizedInterface(interface)
+        #expect(norm.contains("case `continue`(any Swift.Sequence<A>)"))
+        #expect(!norm.contains("Self.Element == A"))
     }
 
     @Test

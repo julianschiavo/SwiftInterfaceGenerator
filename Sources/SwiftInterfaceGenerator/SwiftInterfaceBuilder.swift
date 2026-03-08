@@ -679,6 +679,7 @@ struct SwiftInterfaceBuilder: Sendable {
         let childNames = childrenMap[fullName] ?? []
         let genericParameters = inferredGenericParameters(
             for: declaration,
+            declarations: declarations,
             genericArityMap: genericArityMap,
             knownTypeComponents: knownTypeComponents,
             moduleName: moduleName
@@ -1003,6 +1004,7 @@ struct SwiftInterfaceBuilder: Sendable {
     /// - Returns: An array of inferred generic parameter names.
     private func inferredGenericParameters(
         for declaration: Declaration,
+        declarations: [String: Declaration],
         genericArityMap: [String: Int],
         knownTypeComponents: Set<String>,
         moduleName: String
@@ -1019,13 +1021,22 @@ struct SwiftInterfaceBuilder: Sendable {
         }
 
         var seenParameters: Set<String> = []
-        for fragment in declaration.rawTypeFragments {
+        let descendantFragments = declarations.values
+            .filter { $0.fullName.hasPrefix("\(declaration.fullName).") }
+            .sorted(by: { $0.order < $1.order })
+            .flatMap(\.rawTypeFragments)
+        let fragments = declaration.rawTypeFragments + descendantFragments
+
+        for fragment in fragments {
             for token in genericParameterTokens(in: fragment, moduleName: moduleName) {
                 if knownTypeComponents.contains(token) || excludedTokens.contains(token) {
                     continue
                 }
                 if seenParameters.insert(token).inserted {
                     genericParameters.append(token)
+                    if genericParameters.count == arity {
+                        return genericParameters
+                    }
                 }
             }
         }
@@ -1132,6 +1143,7 @@ struct SwiftInterfaceBuilder: Sendable {
         let rawSignature = callable.rawSignature
         guard
             !rawSignature.contains(".T =="),
+            !containsOperatorNotation(rawSignature),
             !containsUnrenderableExternalModuleReference(
                 rawSignature,
                 allowedPrefixes: allowedPrefixes
@@ -1167,11 +1179,6 @@ struct SwiftInterfaceBuilder: Sendable {
                 from: openingParenthesis
             )
         else {
-            return nil
-        }
-
-        let head = String(rawSignature[..<openingParenthesis])
-        if head.contains(" infix") || head.contains("prefix ") || head.contains("postfix ") {
             return nil
         }
 
@@ -1218,6 +1225,7 @@ struct SwiftInterfaceBuilder: Sendable {
         let initializerKeyword = renderedReturnType.hasSuffix("?") ? "init?" : "init"
 
         // Extract generic clause if present (e.g. "respond<A where A: Mod.Proto>" → name "respond", params "<A>", where "where A : Proto")
+        let head = String(rawSignature[..<openingParenthesis])
         let genericParsed = parseGenericClause(head, moduleName: moduleName)
         let methodName = genericParsed.name
         let genericParamClause = genericParsed.paramClause
@@ -1568,7 +1576,11 @@ struct SwiftInterfaceBuilder: Sendable {
                 cleaned = cleaned.replacingOccurrences(of: from, with: to)
             }
         }
-        return removingRedundantExtensionConstraintClauses(in: replacingDemanglerPackSyntax(in: cleaned))
+        return removingRedundantExtensionConstraintClauses(
+            in: normalizingPrimaryAssociatedTypeExistentials(
+                in: replacingDemanglerPackSyntax(in: cleaned)
+            )
+        )
             .replacingADotPattern()
             .replacingProtocolKeyword()
     }
@@ -1612,6 +1624,59 @@ struct SwiftInterfaceBuilder: Sendable {
         }
 
         return result
+    }
+
+    private func normalizingPrimaryAssociatedTypeExistentials(in string: String) -> String {
+        guard string.contains("<Self.") else {
+            return string
+        }
+
+        var result = ""
+        var index = string.startIndex
+
+        while index < string.endIndex {
+            let character = string[index]
+            guard character == "<",
+                  let closingAngle = matchingClosingDelimiter(
+                      in: string,
+                      from: index,
+                      open: "<",
+                      close: ">"
+                  ),
+                  let replacement = normalizedPrimaryAssociatedTypeExistentialClause(
+                      String(string[index...closingAngle])
+                  ) else {
+                result.append(character)
+                index = string.index(after: index)
+                continue
+            }
+
+            result += replacement
+            index = string.index(after: closingAngle)
+        }
+
+        return result
+    }
+
+    private func normalizedPrimaryAssociatedTypeExistentialClause(_ clause: String) -> String? {
+        guard clause.first == "<", clause.last == ">" else {
+            return nil
+        }
+
+        let body = String(
+            clause[clause.index(after: clause.startIndex)..<clause.index(before: clause.endIndex)]
+        )
+        .trimmingCharacters(in: .whitespaces)
+        guard let match = body.wholeMatch(of: #/^Self\.[A-Za-z_][A-Za-z0-9_]*\s*==\s*(.+)$/#) else {
+            return nil
+        }
+
+        let replacement = String(match.1).trimmingCharacters(in: .whitespaces)
+        guard !replacement.isEmpty else {
+            return nil
+        }
+
+        return "<\(replacement)>"
     }
 
     private func replacingDemanglerPackSyntax(in string: String) -> String {
@@ -2200,7 +2265,7 @@ struct SwiftInterfaceBuilder: Sendable {
         }
 
         let casePath = String(casePathWithType[..<openingParenthesis])
-        guard let caseNameSeparator = casePath.lastIndex(of: ".")
+        guard let caseNameSeparator = memberDotIndex(in: casePath, before: casePath.endIndex)
         else {
             return nil
         }
@@ -2370,9 +2435,7 @@ struct SwiftInterfaceBuilder: Sendable {
             !containsAccessorLikeSymbol(remainder),
             !remainder.contains(".__deallocating_deinit"),
             !remainder.contains(".deinit"),
-            !remainder.contains(" infix"),
-            !remainder.contains("prefix "),
-            !remainder.contains("postfix "),
+            !containsOperatorNotation(remainder),
             let openingParenthesis = remainder.firstIndex(of: "("),
             let memberSeparator = memberDotIndex(in: remainder, before: openingParenthesis)
         else {
@@ -2427,6 +2490,7 @@ struct SwiftInterfaceBuilder: Sendable {
             !remainder.contains(".__deallocating_deinit"),
             !remainder.contains(".deinit"),
             !remainder.contains("__allocating_init"),
+            !containsOperatorNotation(remainder),
             let openingParenthesis = remainder.firstIndex(of: "("),
             let memberSeparator = memberDotIndex(in: remainder, before: openingParenthesis)
         else {
@@ -2458,7 +2522,7 @@ struct SwiftInterfaceBuilder: Sendable {
         }
 
         let stripped = String(qualifiedPath.dropFirst(prefix.count))
-        guard let separator = stripped.lastIndex(of: ".") else {
+        guard let separator = memberDotIndex(in: stripped, before: stripped.endIndex) else {
             return nil
         }
 
@@ -2475,6 +2539,15 @@ struct SwiftInterfaceBuilder: Sendable {
             || remainder.contains(".init :")
             || remainder.contains(".unsafeAddressor :")
             || remainder.contains(".unsafeMutableAddressor :")
+    }
+
+    private func containsOperatorNotation(_ string: String) -> Bool {
+        string.contains(" infix(")
+            || string.contains("infix ")
+            || string.contains(" prefix(")
+            || string.contains("prefix ")
+            || string.contains(" postfix(")
+            || string.contains("postfix ")
     }
 
     /// Parses a generic clause from a method head like `"respond<A where A: Mod.Proto>"`.
