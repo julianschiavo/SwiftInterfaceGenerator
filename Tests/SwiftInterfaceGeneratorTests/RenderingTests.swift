@@ -1623,6 +1623,34 @@ struct ComplexRenderingTests {
     }
 
     @Test
+    func keywordNamedMembersAreBackticked() {
+        let interface = renderingBuilder.makeInterface(
+            demangledSymbols: [
+                "nominal type descriptor for Mod.Canvas",
+                "nominal type descriptor for Mod.Canvas.Options",
+                "property descriptor for static Mod.Canvas.Options.repeat : Mod.Canvas.Options",
+                "static Mod.Canvas.Options.repeat.getter : Mod.Canvas.Options",
+                "metaclass for Mod.PlatformDefinition",
+                "nominal type descriptor for Mod.PlatformDefinition",
+                "static Mod.PlatformDefinition.for(system: Mod.SystemDefinition) -> Mod.PlatformDefinition.Type?",
+            ],
+            targetTriple: "arm64-apple-macosx15.0",
+            moduleName: "Mod",
+            compilerVersion: "Test"
+        )
+
+        let norm = normalizedInterface(interface)
+        #expect(norm.contains("public static var `repeat`: Canvas.Options { get }"))
+        #expect(
+            norm.contains(
+                "public static func `for`(system: SystemDefinition) -> PlatformDefinition.Type?"
+            )
+        )
+        #expect(!norm.contains("public static var repeat:"))
+        #expect(!norm.contains("public static func for(system:"))
+    }
+
+    @Test
     func unsupportedExternalModuleMembersAreFilteredOut() {
         let filteringBuilder = SwiftInterfaceBuilder(renderableExternalModules: [])
         let interface = filteringBuilder.makeInterface(
