@@ -2542,6 +2542,7 @@ struct SwiftInterfaceBuilder: Sendable {
         ("__C.CGRect", "CoreGraphics.CGRect"),
         ("__C.CGSize", "CoreGraphics.CGSize"),
         ("__C.CGImageRef", "CoreGraphics.CGImage"),
+        ("__C.CALayer", "QuartzCore.CALayer"),
         ("__C.CATransform3D", "QuartzCore.CATransform3D"),
         ("__C.NSCoder", "Foundation.NSCoder"),
         ("__C.NSUserActivity", "Foundation.NSUserActivity"),

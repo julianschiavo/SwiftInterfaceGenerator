@@ -1958,12 +1958,17 @@ struct ComplexRenderingTests {
 
     @Test
     func knownObjCTypesAreRemappedAndUnknownOnesAreFilteredOut() {
-        let filteringBuilder = SwiftInterfaceBuilder(renderableExternalModules: ["CoreGraphics"])
+        let filteringBuilder = SwiftInterfaceBuilder(
+            renderableExternalModules: ["CoreGraphics", "QuartzCore"]
+        )
         let interface = filteringBuilder.makeInterface(
             demangledSymbols: [
                 "nominal type descriptor for Mod.Renderer",
                 "Mod.Renderer.init() -> Mod.Renderer",
-                // __C.CALayer is unknown (no typeReplacement) → filtered out
+                // __C.AGSubgraphRef is still unsupported and should be filtered out
+                "property descriptor for Mod.Renderer.subgraph : __C.AGSubgraphRef",
+                "Mod.Renderer.subgraph.getter : __C.AGSubgraphRef",
+                // __C.CALayer should be remapped to QuartzCore.CALayer and preserved
                 "property descriptor for Mod.Renderer.layer : __C.CALayer",
                 "Mod.Renderer.layer.getter : __C.CALayer",
                 // __C.CGRect has a typeReplacement → CoreGraphics.CGRect → kept
@@ -1978,15 +1983,59 @@ struct ComplexRenderingTests {
         )
 
         let norm = normalizedInterface(interface)
-        // Unknown __C type members should be filtered out
-        #expect(!norm.contains("layer"))
-        #expect(!norm.contains("CALayer"))
+        // Unsupported __C type members should be filtered out
+        #expect(!norm.contains("subgraph"))
+        #expect(!norm.contains("AGSubgraphRef"))
         // Known __C type members should be remapped and kept
+        #expect(norm.contains("QuartzCore.CALayer"))
+        #expect(norm.contains("layer"))
         #expect(norm.contains("CoreGraphics.CGRect"))
         #expect(norm.contains("bounds"))
         // Regular members should remain
         #expect(norm.contains("public struct Renderer"))
         #expect(norm.contains("name"))
+    }
+
+    @Test
+    func callablesWithUnknownObjCTypesAreFilteredOut() {
+        let filteringBuilder = SwiftInterfaceBuilder(renderableExternalModules: [])
+        let interface = filteringBuilder.makeInterface(
+            demangledSymbols: [
+                "nominal type descriptor for Mod.RenderNode",
+                "Mod.RenderNode.init(contentSubgraph: __C.AGSubgraphRef) -> Mod.RenderNode",
+                "Mod.RenderNode.layer() -> __C.CALayer",
+                "Mod.RenderNode.debugName() -> Swift.String",
+            ],
+            targetTriple: "arm64-apple-macosx15.0",
+            moduleName: "Mod",
+            compilerVersion: "Test"
+        )
+
+        let norm = normalizedInterface(interface)
+        #expect(!norm.contains("AGSubgraphRef"))
+        #expect(!norm.contains("CALayer"))
+        #expect(!norm.contains("contentSubgraph"))
+        #expect(norm.contains("debugName"))
+    }
+
+    @Test
+    func externalObjCExtensionOwnersDoNotWhitelistUnknownObjCTypes() {
+        let filteringBuilder = SwiftInterfaceBuilder(renderableExternalModules: [])
+        let interface = filteringBuilder.makeInterface(
+            demangledSymbols: [
+                "nominal type descriptor for Mod.RenderNode",
+                "(extension in Mod):__C.AGSubgraphRef.debug() -> Swift.Int",
+                "Mod.RenderNode.init(contentSubgraph: __C.AGSubgraphRef) -> Mod.RenderNode",
+            ],
+            targetTriple: "arm64-apple-macosx15.0",
+            moduleName: "Mod",
+            compilerVersion: "Test"
+        )
+
+        let norm = normalizedInterface(interface)
+        #expect(!norm.contains("__C"))
+        #expect(!norm.contains("contentSubgraph"))
+        #expect(!norm.contains("extension __C.AGSubgraphRef"))
     }
 
     @Test
