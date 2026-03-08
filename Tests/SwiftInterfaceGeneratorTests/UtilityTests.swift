@@ -120,6 +120,17 @@ func renderedTypeNameDoesNotWrapProtocolNameWhenFollowedByMemberAccess() {
 }
 
 @Test
+func renderedTypeNameConvertsDemanglerPackSyntaxInGenericArguments() {
+    #expect(
+        utilityBuilder.renderedTypeName(
+            "Fixture.TupleContent<Pack{repeat A}>",
+            protocolNames: [],
+            moduleName: "Fixture"
+        ) == "TupleContent<repeat each A>"
+    )
+}
+
+@Test
 func escapedIdentifierEscapesSwiftKeywords() {
     #expect(utilityBuilder.escapedIdentifier("class") == "`class`")
     #expect(utilityBuilder.escapedIdentifier("Protocol") == "`Protocol`")

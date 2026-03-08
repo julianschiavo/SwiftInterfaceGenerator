@@ -1324,9 +1324,54 @@ struct SwiftInterfaceBuilder: Sendable {
                 cleaned = cleaned.replacingOccurrences(of: from, with: to)
             }
         }
-        return cleaned
+        return replacingDemanglerPackSyntax(in: cleaned)
             .replacingADotPattern()
             .replacingProtocolKeyword()
+    }
+
+    private func replacingDemanglerPackSyntax(in string: String) -> String {
+        let marker = "Pack{"
+        guard string.contains(marker) else {
+            return string
+        }
+
+        var result = ""
+        var searchStart = string.startIndex
+
+        while let range = string.range(
+            of: marker,
+            range: searchStart..<string.endIndex
+        ) {
+            result += string[searchStart..<range.lowerBound]
+
+            let openingBrace = string.index(before: range.upperBound)
+            guard let closingBrace = matchingClosingDelimiter(
+                in: string,
+                from: openingBrace,
+                open: "{",
+                close: "}"
+            ) else {
+                result += string[range.lowerBound...]
+                return result
+            }
+
+            let body = String(string[range.upperBound..<closingBrace])
+            result += normalizedDemanglerPackBody(body)
+            searchStart = string.index(after: closingBrace)
+        }
+
+        result += string[searchStart...]
+        return result
+    }
+
+    private func normalizedDemanglerPackBody(_ body: String) -> String {
+        let normalized = replacingDemanglerPackSyntax(in: body)
+        guard normalized.hasPrefix("repeat "),
+              !normalized.hasPrefix("repeat each ") else {
+            return normalized
+        }
+
+        return "repeat each " + normalized.dropFirst("repeat ".count)
     }
 
     /// Renders a type name with proper existential syntax for protocols.
