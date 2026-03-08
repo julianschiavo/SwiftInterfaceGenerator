@@ -1651,6 +1651,37 @@ struct ComplexRenderingTests {
     }
 
     @Test
+    func accessorSymbolsDoNotCreatePseudoNestedTypes() {
+        let interface = renderingBuilder.makeInterface(
+            demangledSymbols: [
+                "nominal type descriptor for Mod.Handler",
+                "property descriptor for Mod.Handler.callback : (Swift.Int) -> Swift.String",
+                "Mod.Handler.callback.init : @Sendable (Swift.Int) -> Swift.String",
+                "Mod.Handler.callback.modify : (Swift.Int) -> Swift.String",
+                "Mod.Handler.callback.getter : (Swift.Int) -> Swift.String",
+                "Mod.Handler.callback.setter : (Swift.Int) -> Swift.String",
+                "metaclass for Mod.Controller",
+                "nominal type descriptor for Mod.Controller",
+                "property descriptor for Mod.Controller.provider : ((Any) -> Swift.Int)?",
+                "method descriptor for Mod.Controller.provider.modify : ((Any) -> Swift.Int)?",
+                "method descriptor for Mod.Controller.provider.getter : ((Any) -> Swift.Int)?",
+                "method descriptor for Mod.Controller.provider.setter : ((Any) -> Swift.Int)?",
+            ],
+            targetTriple: "arm64-apple-macosx15.0",
+            moduleName: "Mod",
+            compilerVersion: "Test"
+        )
+
+        let norm = normalizedInterface(interface)
+        #expect(norm.contains("public var callback: (Swift.Int) -> Swift.String { get set }"))
+        #expect(norm.contains("public var provider: ((Any) -> Swift.Int)? { get set }"))
+        #expect(!norm.contains("public struct callback {"))
+        #expect(!norm.contains("public struct provider {"))
+        #expect(!norm.contains("func init :"))
+        #expect(!norm.contains("func modify :"))
+    }
+
+    @Test
     func unsupportedExternalModuleMembersAreFilteredOut() {
         let filteringBuilder = SwiftInterfaceBuilder(renderableExternalModules: [])
         let interface = filteringBuilder.makeInterface(

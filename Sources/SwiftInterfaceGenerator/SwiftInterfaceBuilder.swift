@@ -2212,7 +2212,10 @@ struct SwiftInterfaceBuilder: Sendable {
         }
 
         let remainder = String(line.dropFirst(prefix.count))
-        guard !remainder.contains("__allocating_init") else {
+        guard
+            !remainder.contains("__allocating_init"),
+            !containsAccessorLikeSymbol(remainder)
+        else {
             return nil
         }
         guard
@@ -2323,9 +2326,7 @@ struct SwiftInterfaceBuilder: Sendable {
         }
         remainder.removeFirst(modulePrefix.count)
         guard
-            !remainder.contains(".getter :"),
-            !remainder.contains(".setter :"),
-            !remainder.contains(".modify :"),
+            !containsAccessorLikeSymbol(remainder),
             !remainder.contains(".__deallocating_deinit"),
             !remainder.contains(".deinit"),
             !remainder.contains(" infix"),
@@ -2381,9 +2382,7 @@ struct SwiftInterfaceBuilder: Sendable {
 
         let remainder = String(line.dropFirst(prefix.count))
         guard
-            !remainder.contains(".getter :"),
-            !remainder.contains(".setter :"),
-            !remainder.contains(".modify :"),
+            !containsAccessorLikeSymbol(remainder),
             !remainder.contains(".__deallocating_deinit"),
             !remainder.contains(".deinit"),
             !remainder.contains("__allocating_init"),
@@ -2426,6 +2425,15 @@ struct SwiftInterfaceBuilder: Sendable {
             owner: String(stripped[..<separator]),
             name: String(stripped[stripped.index(after: separator)...])
         )
+    }
+
+    private func containsAccessorLikeSymbol(_ remainder: String) -> Bool {
+        remainder.contains(".getter :")
+            || remainder.contains(".setter :")
+            || remainder.contains(".modify :")
+            || remainder.contains(".init :")
+            || remainder.contains(".unsafeAddressor :")
+            || remainder.contains(".unsafeMutableAddressor :")
     }
 
     /// Parses a generic clause from a method head like `"respond<A where A: Mod.Proto>"`.
