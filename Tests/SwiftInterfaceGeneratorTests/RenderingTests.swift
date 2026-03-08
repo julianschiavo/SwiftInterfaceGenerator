@@ -2014,6 +2014,26 @@ struct ComplexRenderingTests {
     }
 
     @Test
+    func externalExtensionOwnersDoNotWhitelistUnavailableModulePrefixes() {
+        let filteringBuilder = SwiftInterfaceBuilder(renderableExternalModules: [])
+        let interface = filteringBuilder.makeInterface(
+            demangledSymbols: [
+                "nominal type descriptor for Mod.RenderNode",
+                "(extension in Mod):AttributeGraph.Attribute.debug() -> Swift.Int",
+                "Mod.RenderNode.update(attribute: AttributeGraph.Attribute<Mod.RenderNode>) -> ()",
+            ],
+            targetTriple: "arm64-apple-macosx15.0",
+            moduleName: "Mod",
+            compilerVersion: "Test"
+        )
+
+        let norm = normalizedInterface(interface)
+        #expect(!norm.contains("AttributeGraph"))
+        #expect(!norm.contains("func update"))
+        #expect(!norm.contains("extension AttributeGraph.Attribute"))
+    }
+
+    @Test
     func protocolMemberSelfTypeParameterIsReplacedWithSelf() {
         let interface = renderingBuilder.makeInterface(
             demangledSymbols: [

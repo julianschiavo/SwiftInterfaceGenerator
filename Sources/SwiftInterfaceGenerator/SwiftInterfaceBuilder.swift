@@ -799,9 +799,7 @@ struct SwiftInterfaceBuilder: Sendable {
                 .filter { $0.resolvedKind == .protocol }
                 .map(\.fullName)
         )
-        let knownTypeComponents = Set(
-            declarations.keys.flatMap { $0.split(separator: ".").map(String.init) }
-        )
+        let knownTypeComponents = localKnownTypeComponents(from: declarations)
 
         // Pre-compute children map: parent -> sorted child names (P4 optimization)
         var childrenMap: [String: [String]] = [:]
@@ -1191,6 +1189,12 @@ struct SwiftInterfaceBuilder: Sendable {
         moduleName: String
     ) -> String? {
         let ownerName = renderedQualifiedDeclarationName(declaration.fullName, moduleName: moduleName)
+        guard !containsUnrenderableExternalModuleReference(
+            declaration.fullName,
+            allowedPrefixes: allowedPrefixes
+        ) else {
+            return nil
+        }
         let conformanceClause = renderedConformanceClause(
             for: declaration,
             allowedPrefixes: allowedPrefixes,
@@ -1789,9 +1793,7 @@ struct SwiftInterfaceBuilder: Sendable {
         from declarations: [String: Declaration],
         moduleName: String
     ) -> [String] {
-        let knownTypeComponents = Set(
-            declarations.keys.flatMap { $0.split(separator: ".").map(String.init) }
-        )
+        let knownTypeComponents = localKnownTypeComponents(from: declarations)
 
         return discoveredImports(
             from: declarations,
@@ -1843,6 +1845,16 @@ struct SwiftInterfaceBuilder: Sendable {
         }
 
         return modules
+    }
+
+    private func localKnownTypeComponents(
+        from declarations: [String: Declaration]
+    ) -> Set<String> {
+        Set(
+            declarations.values
+                .filter { !$0.isExternalExtension }
+                .flatMap { $0.fullName.split(separator: ".").map(String.init) }
+        )
     }
 
     /// Renders a method or initializer declaration as a Swift source line.
