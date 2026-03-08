@@ -1245,6 +1245,7 @@ struct SwiftInterfaceBuilder: Sendable {
             let accessors = property.hasSetter ? "{ get set }" : "{ get }"
             body.append(
                 "  public \(property.isStatic ? "static " : "")var \(escapedIdentifier(property.name)): \(renderedType) \(accessors)"
+                    .replacingSelfTypePattern()
             )
         }
 
@@ -1283,6 +1284,7 @@ struct SwiftInterfaceBuilder: Sendable {
             let accessors = subscriptMember.hasSetter ? "{ get set }" : "{ get }"
             body.append(
                 "  public subscript(\(renderedArguments)) -> \(renderedReturnType) \(accessors)"
+                    .replacingSelfTypePattern()
             )
         }
 
@@ -1299,7 +1301,7 @@ struct SwiftInterfaceBuilder: Sendable {
                 declarations: declarations,
                 forcePublicAccess: true
             ) {
-                body.append(rendered)
+                body.append(rendered.replacingSelfTypePattern())
             }
         }
 
@@ -1316,7 +1318,7 @@ struct SwiftInterfaceBuilder: Sendable {
                 declarations: declarations,
                 forcePublicAccess: true
             ) {
-                body.append(rendered)
+                body.append(rendered.replacingSelfTypePattern())
             }
         }
 
@@ -1333,7 +1335,7 @@ struct SwiftInterfaceBuilder: Sendable {
                 declarations: declarations,
                 forcePublicAccess: true
             ) {
-                body.append(rendered)
+                body.append(rendered.replacingSelfTypePattern())
             }
         }
 

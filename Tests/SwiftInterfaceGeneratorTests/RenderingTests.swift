@@ -2131,6 +2131,29 @@ struct ComplexRenderingTests {
     }
 
     @Test
+    func externalExtensionMembersReplaceSelfPlaceholder() {
+        let interface = renderingBuilder.makeInterface(
+            demangledSymbols: [
+                "property descriptor for (extension in Mod):Swift.RawRepresentable.codingProxy : Mod.RawRepresentableProxy<A>",
+                "(extension in Mod):Swift.RawRepresentable.codingProxy.getter : Mod.RawRepresentableProxy<A>",
+                "(extension in Mod):Swift.Collection.partitionPoint(where: (A.Element) throws -> Swift.Bool) throws -> A.Index",
+            ],
+            targetTriple: "arm64-apple-macosx15.0",
+            moduleName: "Mod",
+            compilerVersion: "Test"
+        )
+
+        let norm = normalizedInterface(interface)
+        #expect(norm.contains("extension Swift.RawRepresentable {"))
+        #expect(norm.contains("public var codingProxy: RawRepresentableProxy<Self> { get }"))
+        #expect(norm.contains("extension Swift.Collection {"))
+        #expect(norm.contains("public func partitionPoint(`where`: (Self.Element) throws -> Swift.Bool) throws -> Self.Index"))
+        #expect(!norm.contains("RawRepresentableProxy<A>"))
+        #expect(!norm.contains("A.Element"))
+        #expect(!norm.contains("A.Index"))
+    }
+
+    @Test
     func undeclaredNestedTypesGetStubDeclarations() {
         let interface = renderingBuilder.makeInterface(
             demangledSymbols: [
