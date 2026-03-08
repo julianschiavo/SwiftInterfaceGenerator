@@ -265,6 +265,69 @@ func generateInfersModuleNameFromDemangledSymbolsWhenBinaryNameDiffers() async t
 }
 
 @Test
+func generateRecoversProtocolExtensionOpaquePropertyConstraintsForTBDInputs() async throws {
+    let temporaryDirectory = try TemporaryDirectory(prefix: "SwiftInterfaceGeneratorOpaqueTBD")
+    let frameworkURL = temporaryDirectory.url
+        .appendingPathComponent("Fixture.framework", isDirectory: true)
+        .appendingPathComponent("Fixture.tbd")
+    try FileManager.default.createDirectory(
+        at: frameworkURL.deletingLastPathComponent(),
+        withIntermediateDirectories: true
+    )
+    try """
+        --- !tapi-tbd
+        tbd-version: 5
+        targets: [ arm64-macos ]
+        install-name: /System/Library/Frameworks/Fixture.framework/Fixture
+        exports:
+          - targets: [ arm64-macos ]
+            symbols: [ ]
+        ...
+        """
+        .write(to: frameworkURL, atomically: true, encoding: .utf8)
+
+    let commandRunner = MockCommandRunner(
+        responses: [
+            .success(CommandResult(stdout: "raw nm output", stderr: "")),
+            .success(
+                CommandResult(
+                    stdout: [
+                        "protocol descriptor for Fixture.Marker",
+                        "protocol descriptor for Fixture.ViewLike",
+                        "associated type descriptor for Fixture.ViewLike.Body",
+                        "associated conformance descriptor for Fixture.ViewLike.Fixture.ViewLike.Body: Fixture.Marker",
+                        "method descriptor for Fixture.ViewLike.body.getter : A.Body",
+                        "protocol descriptor for Fixture.StyleableView",
+                        "base conformance descriptor for Fixture.StyleableView: Fixture.ViewLike",
+                        "property descriptor for (extension in Fixture):Fixture.StyleableView.body : some",
+                        "(extension in Fixture):Fixture.StyleableView.body.getter : some",
+                    ].joined(separator: "\n"),
+                    stderr: ""
+                )
+            ),
+        ]
+    )
+    let generator = SwiftInterfaceGenerator(
+        commandRunner: commandRunner,
+        compilerVersionProvider: { "Test Swift" }
+    )
+
+    let generatedInterface = try await generator.generate(
+        frameworkBinaryURL: frameworkURL,
+        repositoryRootURL: temporaryDirectory.url,
+        targetTriple: "arm64-apple-macosx15.0"
+    )
+    let interfaceContents = try String(contentsOf: generatedInterface.interfaceURL, encoding: .utf8)
+    let normalized = normalizedInterface(interfaceContents)
+
+    #expect(normalized.contains("public protocol ViewLike {"))
+    #expect(normalized.contains("associatedtype Body: Marker"))
+    #expect(normalized.contains("extension StyleableView {"))
+    #expect(normalized.contains("public var body: some Marker { get }"))
+    #expect(!normalized.contains("public var body: some { get }"))
+}
+
+@Test
 func generateValidatesDiscoveredExternalModules() async throws {
     let temporaryDirectory = try TemporaryDirectory(prefix: "SwiftInterfaceGeneratorImports")
     let frameworkURL = temporaryDirectory.url

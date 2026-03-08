@@ -1225,8 +1225,14 @@ struct SwiftInterfaceBuilder: Sendable {
             else {
                 continue
             }
+            let rawType = resolvedOpaquePropertyType(
+                property,
+                in: ownerDeclaration,
+                declarations: declarations,
+                moduleName: moduleName
+            ) ?? property.rawType
             let renderedType = renderedTypeName(
-                property.rawType,
+                rawType,
                 protocolNames: protocolNames,
                 moduleName: moduleName
             )
