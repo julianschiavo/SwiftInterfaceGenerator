@@ -1239,14 +1239,15 @@ struct SwiftInterfaceBuilder: Sendable {
         protocolNames: Set<String>,
         moduleName: String
     ) throws -> String {
-        try parsedTupleType(fromArgumentList: rawArguments)?.elements.map { element in
+        let sanitizedArguments = cleanedTypeName(rawArguments, moduleName: moduleName)
+        return try parsedTupleType(fromArgumentList: sanitizedArguments)?.elements.map { element in
             let label = element.firstName?.text ?? "_"
             let renderedLabel = label == "_" ? "_" : escapedIdentifier(label)
             return "\(renderedLabel): \(renderedTupleElementType(element, protocolNames: protocolNames, moduleName: moduleName))"
         }.joined(separator: ", ")
             ?? {
                 throw SwiftInterfaceGeneratorError.unexpectedOutput(
-                    "Unbalanced argument list: \(rawArguments)"
+                    "Unbalanced argument list: \(sanitizedArguments)"
                 )
             }()
     }
@@ -2837,6 +2838,7 @@ struct SwiftInterfaceBuilder: Sendable {
     ]
 
     private static let swiftKeywords: Set<String> = [
+        "as",
         "associatedtype",
         "class",
         "deinit",
@@ -2845,6 +2847,7 @@ struct SwiftInterfaceBuilder: Sendable {
         "extension",
         "func",
         "import",
+        "in",
         "init",
         "inout",
         "internal",

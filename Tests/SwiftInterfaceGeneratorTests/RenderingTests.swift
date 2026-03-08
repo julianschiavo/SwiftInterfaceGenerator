@@ -738,6 +738,24 @@ struct MakeInterfaceTests {
     }
 
     @Test
+    func contextualKeywordMethodNamesEscaped() {
+        let interface = renderingBuilder.makeInterface(
+            demangledSymbols: [
+                "nominal type descriptor for Mod.Builder",
+                "Mod.Builder.in() -> Swift.String",
+                "Mod.Builder.as() -> Swift.String",
+            ],
+            targetTriple: "arm64-apple-macosx15.0",
+            moduleName: "Mod",
+            compilerVersion: "Test"
+        )
+
+        let normalized = normalizedInterface(interface)
+        #expect(normalized.contains("func `in`() -> Swift.String"))
+        #expect(normalized.contains("func `as`() -> Swift.String"))
+    }
+
+    @Test
     func keywordEnumCaseNameEscaped() {
         let interface = renderingBuilder.makeInterface(
             demangledSymbols: [

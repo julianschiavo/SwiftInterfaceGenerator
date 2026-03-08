@@ -1192,6 +1192,16 @@ struct RenderedArgumentListTests {
         )
         #expect(result == "_: Swift.Int")
     }
+
+    @Test
+    func stripsExtensionContextPrefixesInArgumentTypes() throws {
+        let result = try builder.renderedArgumentList(
+            "_: (extension in Sample):Sample.Material.Context, in: inout (extension in Sample):Sample.Material.State",
+            protocolNames: [],
+            moduleName: "Sample"
+        )
+        #expect(result == "_: Material.Context, `in`: inout Material.State")
+    }
 }
 
 // MARK: - Normalized Symbol Line
