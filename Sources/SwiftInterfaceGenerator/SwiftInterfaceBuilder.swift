@@ -724,9 +724,6 @@ struct SwiftInterfaceBuilder: Sendable {
         }
 
         for property in declaration.properties.sorted(by: { $0.order < $1.order }) {
-            guard !property.rawType.contains("CoreGraphics.Region") else {
-                continue
-            }
             guard
                 !containsUnrenderableExternalModuleReference(
                     property.rawType,
@@ -1090,7 +1087,6 @@ struct SwiftInterfaceBuilder: Sendable {
         let rawSignature = callable.rawSignature
         guard
             !rawSignature.contains(".T =="),
-            !rawSignature.contains("CoreGraphics.Region"),
             !containsUnrenderableExternalModuleReference(
                 rawSignature,
                 allowedPrefixes: allowedPrefixes

@@ -83,6 +83,7 @@ struct MakeInterfaceTests {
                 public final class Manager {
                   public static var shared: Manager { get }
                   public var createdAt: Foundation.Date { get set }
+                  public var region: CoreGraphics.Region { get }
                   public init()
                   public func accept(greeter: any Greeter)
                   public func use(queue: Dispatch.DispatchQueue) -> Foundation.Date
@@ -1220,14 +1221,16 @@ struct ComplexRenderingTests {
     }
 
     @Test
-    func regionPropertyFilteredOut() {
+    func regionPropertyAndInitializerRendered() {
         let interface = renderingBuilder.makeInterface(
             demangledSymbols: [
                 "nominal type descriptor for Mod.View",
                 "property descriptor for Mod.View.name : Swift.String",
                 "Mod.View.name.getter : Swift.String",
-                "property descriptor for Mod.View.region : CoreGraphics.Region",
-                "Mod.View.region.getter : CoreGraphics.Region",
+                "property descriptor for Mod.View.visibleRegion : CoreGraphics.Region?",
+                "Mod.View.visibleRegion.getter : CoreGraphics.Region?",
+                "Mod.View.visibleRegion.setter : CoreGraphics.Region?",
+                "Mod.View.init(visibleRegion: CoreGraphics.Region?) -> Mod.View",
             ],
             targetTriple: "arm64-apple-macosx15.0",
             moduleName: "Mod",
@@ -1236,7 +1239,8 @@ struct ComplexRenderingTests {
 
         let norm = normalizedInterface(interface)
         #expect(norm.contains("var name"))
-        #expect(!norm.contains("region"))
+        #expect(norm.contains("public var visibleRegion: CoreGraphics.Region? { get set }"))
+        #expect(norm.contains("public init(visibleRegion: CoreGraphics.Region?)"))
     }
 
     @Test
