@@ -1697,6 +1697,52 @@ struct IntegrationTests {
         )
     }
 
+    // MARK: - Unavailable Module Filtering
+
+    @Test
+    func unavailableModuleTypesAreFilteredOut() async throws {
+        let fixture = try integrationCompiler.compileFrameworkWithUnavailableModule(
+            moduleName: "MainModule",
+            sources: [
+                "MainModule.swift": """
+                import PrivateHelper
+
+                public struct Widget {
+                    public var name: String
+                    public var helper: PrivateHelper.Token
+
+                    public init(name: String, helper: PrivateHelper.Token) {
+                        self.name = name
+                        self.helper = helper
+                    }
+
+                    public func describe() -> String { name }
+                }
+                """
+            ],
+            helperModuleName: "PrivateHelper",
+            helperSources: [
+                "PrivateHelper.swift": """
+                public struct Token {
+                    public var id: Int
+                    public init(id: Int) { self.id = id }
+                }
+                """
+            ]
+        )
+        let contents = try await generateInterface(fixture: fixture)
+        let normalized = normalizedInterface(contents)
+
+        // PrivateHelper module is unavailable, so:
+        // - import PrivateHelper should NOT appear
+        #expect(!normalized.contains("import PrivateHelper"))
+        // - Members referencing PrivateHelper types should be filtered out
+        #expect(!normalized.contains("PrivateHelper."))
+        // - But Widget should still exist with its non-PrivateHelper members
+        #expect(normalized.contains("public struct Widget"))
+        #expect(normalized.contains("public func describe() -> Swift.String"))
+    }
+
     // MARK: - Bare Opaque Types
 
     @Test

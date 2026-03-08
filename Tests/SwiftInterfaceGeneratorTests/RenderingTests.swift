@@ -1768,6 +1768,144 @@ struct ComplexRenderingTests {
     }
 
     @Test
+    func unsupportedExternalModuleConformancesAreFilteredOut() {
+        let filteringBuilder = SwiftInterfaceBuilder(renderableExternalModules: [])
+        let interface = filteringBuilder.makeInterface(
+            demangledSymbols: [
+                "protocol descriptor for Mod.Trackable",
+                "method descriptor for Mod.Trackable.track() -> ()",
+                "nominal type descriptor for Mod.Widget",
+                "protocol conformance descriptor for Mod.Widget : Mod.Trackable in Mod",
+                "protocol conformance descriptor for Mod.Widget : HiddenFramework.StatefulRule in Mod",
+                "protocol conformance descriptor for Mod.Widget : Swift.Sendable in Mod",
+                "Mod.Widget.track() -> ()",
+            ],
+            targetTriple: "arm64-apple-macosx15.0",
+            moduleName: "Mod",
+            compilerVersion: "Test"
+        )
+
+        let norm = normalizedInterface(interface)
+        // HiddenFramework conformance should be stripped from the inheritance clause
+        #expect(!norm.contains("HiddenFramework"))
+        // But Trackable and Sendable conformances should remain
+        #expect(norm.contains("Trackable"))
+        #expect(norm.contains("Sendable"))
+    }
+
+    @Test
+    func knownObjCTypesAreRemappedAndUnknownOnesAreFilteredOut() {
+        let filteringBuilder = SwiftInterfaceBuilder(renderableExternalModules: ["CoreGraphics"])
+        let interface = filteringBuilder.makeInterface(
+            demangledSymbols: [
+                "nominal type descriptor for Mod.Renderer",
+                "Mod.Renderer.init() -> Mod.Renderer",
+                // __C.CALayer is unknown (no typeReplacement) → filtered out
+                "property descriptor for Mod.Renderer.layer : __C.CALayer",
+                "Mod.Renderer.layer.getter : __C.CALayer",
+                // __C.CGRect has a typeReplacement → CoreGraphics.CGRect → kept
+                "property descriptor for Mod.Renderer.bounds : __C.CGRect",
+                "Mod.Renderer.bounds.getter : __C.CGRect",
+                "property descriptor for Mod.Renderer.name : Swift.String",
+                "Mod.Renderer.name.getter : Swift.String",
+            ],
+            targetTriple: "arm64-apple-macosx15.0",
+            moduleName: "Mod",
+            compilerVersion: "Test"
+        )
+
+        let norm = normalizedInterface(interface)
+        // Unknown __C type members should be filtered out
+        #expect(!norm.contains("layer"))
+        #expect(!norm.contains("CALayer"))
+        // Known __C type members should be remapped and kept
+        #expect(norm.contains("CoreGraphics.CGRect"))
+        #expect(norm.contains("bounds"))
+        // Regular members should remain
+        #expect(norm.contains("public struct Renderer"))
+        #expect(norm.contains("name"))
+    }
+
+    @Test
+    func enumCasesWithUnrenderablePayloadsAreFilteredOut() {
+        let filteringBuilder = SwiftInterfaceBuilder(renderableExternalModules: [])
+        let interface = filteringBuilder.makeInterface(
+            demangledSymbols: [
+                "nominal type descriptor for Mod.Action",
+                "enum case for Mod.Action.tap(Mod.Action) -> Mod.Action",
+                "enum case for Mod.Action.draw(Mod.Action) -> (__C.RBDisplayList) -> Mod.Action",
+                "enum case for Mod.Action.resize(Mod.Action) -> (Swift.Int) -> Mod.Action",
+            ],
+            targetTriple: "arm64-apple-macosx15.0",
+            moduleName: "Mod",
+            compilerVersion: "Test"
+        )
+
+        let norm = normalizedInterface(interface)
+        // Enum case with unknown __C type should be filtered out
+        #expect(!norm.contains("draw"))
+        #expect(!norm.contains("__C"))
+        // Simple and safe enum cases should remain
+        #expect(norm.contains("case tap"))
+        #expect(norm.contains("case resize"))
+    }
+
+    @Test
+    func protocolMemberSelfTypeParameterIsReplacedWithSelf() {
+        let interface = renderingBuilder.makeInterface(
+            demangledSymbols: [
+                "protocol descriptor for Mod.Container",
+                "associated type descriptor for Mod.Container.Content",
+                "method descriptor for Mod.Container.makeContent() -> A.Content",
+                "method descriptor for Mod.Container.wrap(value: Mod.Wrapper<A>) -> Swift.String",
+            ],
+            targetTriple: "arm64-apple-macosx15.0",
+            moduleName: "Mod",
+            compilerVersion: "Test"
+        )
+
+        let norm = normalizedInterface(interface)
+        // In protocol methods, bare A should become Self
+        #expect(norm.contains("func makeContent() -> Self.Content"))
+        #expect(norm.contains("func wrap(value: Wrapper<Self>) -> Swift.String"))
+        // Should not contain bare A references
+        let lines = norm.split(separator: "\n")
+        for line in lines where line.contains("func ") {
+            #expect(!line.contains(" A.") && !line.contains("<A>") && !line.contains("<A,"),
+                    "Protocol method should use Self, not A: \(line)")
+        }
+    }
+
+    @Test
+    func undeclaredNestedTypesGetStubDeclarations() {
+        let interface = renderingBuilder.makeInterface(
+            demangledSymbols: [
+                "nominal type descriptor for Mod.Color",
+                "Mod.Color.init() -> Mod.Color",
+                "nominal type descriptor for Mod.Color.Resolved",
+                "property descriptor for Mod.Color.Resolved.red : Swift.Float",
+                "Mod.Color.Resolved.red.getter : Swift.Float",
+                // ResolvedHDR is NOT declared via nominal type descriptor
+                // but referenced in members — should get a stub
+                "Mod.Color.resolveHDR(`in`: Mod.Environment) -> Mod.Color.ResolvedHDR",
+                "property descriptor for Mod.Color.hdr : Mod.Color.ResolvedHDR",
+                "Mod.Color.hdr.getter : Mod.Color.ResolvedHDR",
+                "nominal type descriptor for Mod.Environment",
+            ],
+            targetTriple: "arm64-apple-macosx15.0",
+            moduleName: "Mod",
+            compilerVersion: "Test"
+        )
+
+        let norm = normalizedInterface(interface)
+        // Members referencing the undeclared nested type should be kept
+        #expect(norm.contains("resolveHDR"))
+        #expect(norm.contains("hdr"))
+        // The undeclared nested type should get a stub declaration
+        #expect(norm.contains("public struct ResolvedHDR"))
+    }
+
+    @Test
     func generableStyleConformersGetSelfPartiallyGeneratedTypealias() {
         let interface = renderingBuilder.makeInterface(
             demangledSymbols: [

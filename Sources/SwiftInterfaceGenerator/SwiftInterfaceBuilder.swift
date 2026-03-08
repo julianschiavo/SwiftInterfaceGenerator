@@ -522,6 +522,46 @@ struct SwiftInterfaceBuilder: Sendable {
             }
         }
 
+        // Create stub declarations for nested types that are referenced in member
+        // signatures but lack a nominal type descriptor (e.g. SPI types).
+        let declaredNames = Set(declarations.keys)
+        var stubs: [String: Declaration] = [:]
+        // Scan all declared type names looking for references to undeclared nested types
+        for parentName in declaredNames {
+            let prefix = "\(parentName)."
+            for decl in declarations.values {
+                let stubCandidateFragments = decl.properties.map(\.rawType) + decl.enumCases.compactMap(\.rawPayload)
+            for rawFragment in stubCandidateFragments {
+                    guard rawFragment.contains(prefix) else { continue }
+                    // Find all occurrences of ParentName.NestedType
+                    var searchStart = rawFragment.startIndex
+                    while let prefixRange = rawFragment.range(of: prefix, range: searchStart..<rawFragment.endIndex) {
+                        let afterPrefix = rawFragment[prefixRange.upperBound...]
+                        // Extract the nested type name (starts with uppercase)
+                        guard let firstChar = afterPrefix.first, firstChar.isUppercase else {
+                            searchStart = prefixRange.upperBound
+                            continue
+                        }
+                        var nameEnd = prefixRange.upperBound
+                        while nameEnd < rawFragment.endIndex {
+                            let c = rawFragment[nameEnd]
+                            guard c.isLetter || c.isNumber || c == "_" else { break }
+                            nameEnd = rawFragment.index(after: nameEnd)
+                        }
+                        let nestedName = String(rawFragment[prefixRange.upperBound..<nameEnd])
+                        let fullName = "\(parentName).\(nestedName)"
+                        if !declaredNames.contains(fullName), stubs[fullName] == nil {
+                            stubs[fullName] = Declaration(fullName: fullName, order: Int.max - stubs.count)
+                        }
+                        searchStart = nameEnd
+                    }
+                }
+            }
+        }
+        for (name, stub) in stubs {
+            declarations[name] = stub
+        }
+
         return declarations
     }
 
@@ -688,6 +728,7 @@ struct SwiftInterfaceBuilder: Sendable {
         let name = escapedIdentifier(simpleName(of: fullName))
         let conformanceClause = renderedConformanceClause(
             for: declaration,
+            allowedPrefixes: allowedPrefixes,
             moduleName: moduleName
         )
         let isProtocol = declaration.resolvedKind == .protocol
@@ -730,6 +771,7 @@ struct SwiftInterfaceBuilder: Sendable {
         for associatedType in declaration.associatedTypes.sorted(by: { $0.order < $1.order }) {
             let conformanceClause = renderedAssociatedTypeConformanceClause(
                 for: associatedType,
+                allowedPrefixes: allowedPrefixes,
                 moduleName: moduleName
             )
             body.append(
@@ -747,6 +789,14 @@ struct SwiftInterfaceBuilder: Sendable {
 
         for enumCase in declaration.enumCases.sorted(by: { $0.order < $1.order }) {
             if let rawPayload = enumCase.rawPayload {
+                guard
+                    !containsUnrenderableExternalModuleReference(
+                        rawPayload,
+                        allowedPrefixes: allowedPrefixes
+                    )
+                else {
+                    continue
+                }
                 body.append(
                     "\(indent)  case \(escapedIdentifier(enumCase.name))(\(renderedTypeName(rawPayload, protocolNames: protocolNames, moduleName: moduleName)))"
                 )
@@ -780,9 +830,11 @@ struct SwiftInterfaceBuilder: Sendable {
                 moduleName: moduleName
             )
             let accessors = property.hasSetter ? "{ get set }" : "{ get }"
-            body.append(
-                "\(indent)  \(memberAccessPrefix)\(property.isStatic ? "static " : "")var \(escapedIdentifier(property.name)): \(renderedType) \(accessors)"
-            )
+            var propertyLine = "\(indent)  \(memberAccessPrefix)\(property.isStatic ? "static " : "")var \(escapedIdentifier(property.name)): \(renderedType) \(accessors)"
+            if isProtocol {
+                propertyLine = propertyLine.replacingSelfTypePattern()
+            }
+            body.append(propertyLine)
         }
 
         for subscriptMember in declaration.subscripts.sorted(by: { $0.order < $1.order }) {
@@ -809,9 +861,11 @@ struct SwiftInterfaceBuilder: Sendable {
                 moduleName: moduleName
             )
             let accessors = subscriptMember.hasSetter ? "{ get set }" : "{ get }"
-            body.append(
-                "\(indent)  \(memberAccessPrefix)subscript(\(renderedArguments)) -> \(renderedReturnType) \(accessors)"
-            )
+            var subscriptLine = "\(indent)  \(memberAccessPrefix)subscript(\(renderedArguments)) -> \(renderedReturnType) \(accessors)"
+            if isProtocol {
+                subscriptLine = subscriptLine.replacingSelfTypePattern()
+            }
+            body.append(subscriptLine)
         }
 
         let protocolOwnerName = isProtocol ? simpleName(of: fullName) : nil
@@ -890,23 +944,31 @@ struct SwiftInterfaceBuilder: Sendable {
     ///   empty string if there are no conformances.
     private func renderedConformanceClause(
         for declaration: Declaration,
+        allowedPrefixes: Set<String>?,
         moduleName: String
     ) -> String {
-        renderedConformanceClause(for: declaration.conformances, moduleName: moduleName)
+        renderedConformanceClause(for: declaration.conformances, allowedPrefixes: allowedPrefixes, moduleName: moduleName)
     }
 
     private func renderedAssociatedTypeConformanceClause(
         for associatedType: Declaration.AssociatedType,
+        allowedPrefixes: Set<String>?,
         moduleName: String
     ) -> String {
-        renderedConformanceClause(for: associatedType.conformances, moduleName: moduleName)
+        renderedConformanceClause(for: associatedType.conformances, allowedPrefixes: allowedPrefixes, moduleName: moduleName)
     }
 
     private func renderedConformanceClause(
         for rawConformances: [String],
+        allowedPrefixes: Set<String>?,
         moduleName: String
     ) -> String {
-        let conformances = normalizedConformances(rawConformances)
+        var conformances = normalizedConformances(rawConformances)
+        if let allowedPrefixes {
+            conformances = conformances.filter { conformance in
+                !containsUnrenderableExternalModuleReference(conformance, allowedPrefixes: allowedPrefixes)
+            }
+        }
         guard !conformances.isEmpty else {
             return ""
         }
@@ -1542,9 +1604,11 @@ struct SwiftInterfaceBuilder: Sendable {
 
     private static let typeReplacements: [(String, String)] = [
         ("__owned ", ""),
+        ("@Swift.MainActor", "@MainActor"),
         ("Swift.Actor", "_Concurrency.Actor"),
         ("Swift.AsyncIteratorProtocol", "_Concurrency.AsyncIteratorProtocol"),
         ("Swift.AsyncSequence", "_Concurrency.AsyncSequence"),
+        ("Swift.ContinuousClock", "_Concurrency.ContinuousClock"),
         ("__C.CGAffineTransform", "CoreGraphics.CGAffineTransform"),
         ("__C.CGFloat", "CoreGraphics.CGFloat"),
         ("__C.CGPoint", "CoreGraphics.CGPoint"),
@@ -3066,7 +3130,7 @@ struct SwiftInterfaceBuilder: Sendable {
         }
         return knownTypeComponents
             .union(renderableExternalModules)
-            .union(["Swift", "__C", moduleName])
+            .union(["Swift", moduleName])
     }
 
     private func containsUnrenderableExternalModuleReference(
@@ -3077,7 +3141,16 @@ struct SwiftInterfaceBuilder: Sendable {
             return false
         }
 
-        return moduleLikePrefixes(in: string).contains { prefix in
+        // Apply type replacements so that known __C.X → Module.X mappings
+        // resolve to allowed module prefixes instead of triggering the filter
+        var resolved = string
+        for (from, to) in Self.typeReplacements {
+            if resolved.contains(from) {
+                resolved = resolved.replacingOccurrences(of: from, with: to)
+            }
+        }
+
+        return moduleLikePrefixes(in: resolved).contains { prefix in
             !allowedPrefixes.contains(prefix)
         }
     }
@@ -3515,22 +3588,29 @@ private extension String {
     /// Replaces `A.` with `Self.` only when not preceded by a word character.
     /// Equivalent to: s/(?<!\w)A\./Self./g
     func replacingSelfTypePattern() -> String {
-        guard self.contains("A.") else { return self }
+        guard self.contains("A") else { return self }
         var result = ""
         result.reserveCapacity(count + 16)
         var i = startIndex
         while i < endIndex {
             let c = self[i]
             if c == "A" {
-                let nextI = index(after: i)
-                if nextI < endIndex && self[nextI] == "." {
-                    let precededByWord = i > startIndex && {
-                        let prev = self[index(before: i)]
-                        return prev.isLetter || prev.isNumber || prev == "_"
-                    }()
-                    if !precededByWord {
+                let precededByWord = i > startIndex && {
+                    let prev = self[index(before: i)]
+                    return prev.isLetter || prev.isNumber || prev == "_"
+                }()
+                if !precededByWord {
+                    let nextI = index(after: i)
+                    let nextChar: Character? = nextI < endIndex ? self[nextI] : nil
+                    if nextChar == "." {
+                        // A.Something → Self.Something
                         result += "Self."
                         i = index(after: nextI)
+                        continue
+                    } else if nextChar == nil || nextChar == ">" || nextChar == "," || nextChar == ")" || nextChar == "?" || nextChar == " " {
+                        // Bare A at end, or A>, A,, A), A?, A<space> → Self
+                        result += "Self"
+                        i = nextI
                         continue
                     }
                 }

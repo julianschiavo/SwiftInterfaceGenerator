@@ -265,7 +265,7 @@ func generateInfersModuleNameFromDemangledSymbolsWhenBinaryNameDiffers() async t
 }
 
 @Test
-func generateUsesDiscoveredExternalModulesWithoutCompilerProbing() async throws {
+func generateValidatesDiscoveredExternalModules() async throws {
     let temporaryDirectory = try TemporaryDirectory(prefix: "SwiftInterfaceGeneratorImports")
     let frameworkURL = temporaryDirectory.url
         .appendingPathComponent("Fixture.framework", isDirectory: true)
@@ -279,6 +279,7 @@ func generateUsesDiscoveredExternalModulesWithoutCompilerProbing() async throws 
         responses: [
             .success(CommandResult(stdout: rawSymbols, stderr: "")),
             .success(CommandResult(stdout: demangledSymbols, stderr: "")),
+            // swiftc -typecheck for module validation (Foundation is valid)
             .success(CommandResult(stdout: "", stderr: "")),
         ]
     )
@@ -310,19 +311,74 @@ func generateUsesDiscoveredExternalModulesWithoutCompilerProbing() async throws 
             """
             )
     )
-    #expect(
-        await commandRunner.recordedInvocations()
-            == [
-                .init(
-                    executable: "nm",
-                    arguments: ["-gU", frameworkURL.standardizedFileURL.path],
-                    stdin: nil
-                ),
-                .init(
-                    executable: "swift-demangle",
-                    arguments: ["--compact"],
-                    stdin: rawSymbols
-                ),
-            ]
+    let invocations = await commandRunner.recordedInvocations()
+    #expect(invocations.count == 3)
+    #expect(invocations[0] == .init(
+        executable: "nm",
+        arguments: ["-gU", frameworkURL.standardizedFileURL.path],
+        stdin: nil
+    ))
+    #expect(invocations[1] == .init(
+        executable: "swift-demangle",
+        arguments: ["--compact"],
+        stdin: rawSymbols
+    ))
+    #expect(invocations[2].executable == "swiftc")
+    #expect(invocations[2].arguments.contains("-typecheck"))
+    #expect(invocations[2].arguments.contains("-target"))
+}
+
+@Test
+func generateFiltersAllUnavailableModulesIteratively() async throws {
+    let temporaryDirectory = try TemporaryDirectory(prefix: "SwiftInterfaceGeneratorMultiImport")
+    let frameworkURL = temporaryDirectory.url
+        .appendingPathComponent("Fixture.framework", isDirectory: true)
+        .appendingPathComponent("Fixture")
+    let rawSymbols = "raw nm output"
+    // Symbols reference types from two unavailable modules: ModuleA and ModuleB
+    let demangledSymbols = [
+        "nominal type descriptor for Fixture.Widget",
+        "property descriptor for Fixture.Widget.name : Swift.String",
+        "property descriptor for Fixture.Widget.tokenA : ModuleA.Token",
+        "property descriptor for Fixture.Widget.tokenB : ModuleB.Token",
+    ].joined(separator: "\n")
+    let commandRunner = MockCommandRunner(
+        responses: [
+            .success(CommandResult(stdout: rawSymbols, stderr: "")),
+            .success(CommandResult(stdout: demangledSymbols, stderr: "")),
+            // First swiftc -typecheck: compiler reports only ModuleA as missing
+            .failure(.commandFailed(
+                command: "swiftc -typecheck ...",
+                status: "exited(1)",
+                stdout: "",
+                stderr: "error: no such module 'ModuleA'"
+            )),
+            // Second swiftc -typecheck (after removing ModuleA): reports ModuleB
+            .failure(.commandFailed(
+                command: "swiftc -typecheck ...",
+                status: "exited(1)",
+                stdout: "",
+                stderr: "error: no such module 'ModuleB'"
+            )),
+        ]
     )
+    let generator = SwiftInterfaceGenerator(
+        commandRunner: commandRunner,
+        compilerVersionProvider: { "Test Swift" }
+    )
+
+    let generatedInterface = try await generator.generate(
+        frameworkBinaryURL: frameworkURL,
+        repositoryRootURL: temporaryDirectory.url,
+        targetTriple: "arm64-apple-macosx15.0"
+    )
+    let interfaceContents = try String(contentsOf: generatedInterface.interfaceURL, encoding: .utf8)
+    let normalized = normalizedInterface(interfaceContents)
+
+    // Neither ModuleA nor ModuleB should appear in the output
+    #expect(!normalized.contains("ModuleA"))
+    #expect(!normalized.contains("ModuleB"))
+    // Widget should still exist with its non-external member
+    #expect(normalized.contains("public struct Widget"))
+    #expect(normalized.contains("name"))
 }

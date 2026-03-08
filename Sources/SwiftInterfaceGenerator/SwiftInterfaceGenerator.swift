@@ -276,11 +276,64 @@ public struct SwiftInterfaceGenerator: Sendable {
         moduleName: String,
         targetTriple: String
     ) async throws -> Set<String> {
-        Set(
-            utilityBuilder.discoveredExternalModules(
-                from: declarations,
-                moduleName: moduleName
-            )
+        let candidates = utilityBuilder.discoveredExternalModules(
+            from: declarations,
+            moduleName: moduleName
         )
+        guard !candidates.isEmpty else { return [] }
+
+        let validated = await validateImportableModules(
+            candidates,
+            targetTriple: targetTriple
+        )
+        return Set(validated)
+    }
+
+    /// Validates which modules can actually be imported by the compiler.
+    ///
+    /// Creates a temporary source file with import statements for all candidate modules,
+    /// then runs `swiftc -typecheck` to determine which imports succeed. Modules that
+    /// produce "no such module" errors are excluded.
+    private func validateImportableModules(
+        _ modules: [String],
+        targetTriple: String
+    ) async -> [String] {
+        var remaining = modules
+
+        while !remaining.isEmpty {
+            let imports = remaining.map { "import \($0)" }.joined(separator: "\n")
+            let tempFile = FileManager.default.temporaryDirectory
+                .appendingPathComponent("module_check_\(UUID().uuidString).swift")
+
+            do {
+                try imports.write(to: tempFile, atomically: true, encoding: .utf8)
+                defer { try? FileManager.default.removeItem(at: tempFile) }
+
+                _ = try await commandRunner.run(
+                    executable: "swiftc",
+                    arguments: ["-typecheck", "-target", targetTriple, tempFile.path],
+                    stdin: nil
+                )
+                // All imports succeeded
+                return remaining
+            } catch let error as SwiftInterfaceGeneratorError {
+                if case .commandFailed(_, _, _, let stderr) = error {
+                    let unavailable = Set(
+                        stderr.matches(of: /no such module '([^']+)'/)
+                            .map { String($0.output.1) }
+                    )
+                    if unavailable.isEmpty {
+                        return remaining
+                    }
+                    remaining = remaining.filter { !unavailable.contains($0) }
+                    continue
+                }
+                return remaining
+            } catch {
+                return remaining
+            }
+        }
+
+        return remaining
     }
 }
