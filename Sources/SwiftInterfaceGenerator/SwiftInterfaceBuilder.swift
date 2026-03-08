@@ -1921,14 +1921,34 @@ struct SwiftInterfaceBuilder: Sendable {
         moduleName: String = ""
     ) -> String {
         let cleaned = cleanedTypeName(rawTypeName, moduleName: moduleName)
-        guard let typeSyntax = parsedTypeSyntax(from: cleaned) else {
-            return cleaned
+        let rewritten: String
+        if let typeSyntax = parsedTypeSyntax(from: cleaned) {
+            rewritten = ExistentialTypeRewriter(protocolNames: protocolNames)
+                .visit(typeSyntax)
+                .trimmedDescription
+        } else {
+            rewritten = cleaned
         }
 
-        let rewritten = ExistentialTypeRewriter(protocolNames: protocolNames)
-            .visit(typeSyntax)
-            .trimmedDescription
-        return normalizedExistentialComposition(in: rewritten)
+        return normalizedExistentialComposition(
+            in: normalizedRedundantAnyMetatype(rewritten)
+        )
+    }
+
+    private func normalizedRedundantAnyMetatype(_ string: String) -> String {
+        let nestedAnyMetatype = /any\s*\((?<innerAny>any [^()]+)\)\.Type/
+        var result = string
+
+        while let match = result.firstMatch(of: nestedAnyMetatype) {
+            let innerProtocol = String(match.innerAny)
+                .replacing(/^any\s+/, with: "")
+            result.replaceSubrange(
+                match.range,
+                with: "any \(innerProtocol).Type"
+            )
+        }
+
+        return result
     }
 
     private func parsedTypeSyntax(from source: String) -> TypeSyntax? {

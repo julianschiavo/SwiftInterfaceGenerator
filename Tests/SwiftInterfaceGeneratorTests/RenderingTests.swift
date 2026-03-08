@@ -1394,6 +1394,24 @@ struct ComplexRenderingTests {
     }
 
     @Test
+    func protocolPropertyMetatypeUsesSingleExistential() {
+        let interface = renderingBuilder.makeInterface(
+            demangledSymbols: [
+                "protocol descriptor for Mod.CodableBoxTag",
+                "method descriptor for Mod.CodableBoxTag.box.getter : any (any Mod.CodableBox).Type",
+            ],
+            targetTriple: "arm64-apple-macosx15.0",
+            moduleName: "Mod",
+            compilerVersion: "Test"
+        )
+
+        let norm = normalizedInterface(interface)
+        #expect(norm.contains("public protocol CodableBoxTag {"))
+        #expect(norm.contains("var box: any CodableBox.Type { get }"))
+        #expect(!norm.contains("any (any CodableBox).Type"))
+    }
+
+    @Test
     func methodGenericPlaceholderSelfUsesInferredTypeParameter() {
         let interface = renderingBuilder.makeInterface(
             demangledSymbols: [
