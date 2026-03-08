@@ -1496,6 +1496,25 @@ struct ComplexRenderingTests {
     }
 
     @Test
+    func emptyGenericParameterClauseOmitsAngleBrackets() {
+        let interface = renderingBuilder.makeInterface(
+            demangledSymbols: [
+                "nominal type descriptor for SwiftUI.KeyframeTrack",
+                "SwiftUI.KeyframeTrack.init< where A == B>(content: () -> C) -> SwiftUI.KeyframeTrack<A, A, C>",
+                "SwiftUI.KeyframeTrack.init(_: Swift.WritableKeyPath<A, B>, content: () -> C) -> SwiftUI.KeyframeTrack<A, B, C>",
+            ],
+            targetTriple: "arm64-apple-macosx15.0",
+            moduleName: "SwiftUI",
+            compilerVersion: "Test"
+        )
+
+        let norm = normalizedInterface(interface)
+        #expect(norm.contains("public struct KeyframeTrack<C, A, B> {"))
+        #expect(norm.contains("public init(content: () -> C) where A == B"))
+        #expect(!norm.contains("init<>"))
+    }
+
+    @Test
     func missingModuleImportsDetected() {
         let interface = renderingBuilder.makeInterface(
             demangledSymbols: [

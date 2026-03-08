@@ -2476,19 +2476,23 @@ struct SwiftInterfaceBuilder: Sendable {
                 toWhereClause: cleanedConstraints,
                 packParameters: packParameters
             )
+            let renderedParamClause = declaredParams.isEmpty
+                ? ""
+                : "<\(declaredParams.joined(separator: ", "))>"
 
             return (
                 name: name,
-                paramClause: "<\(declaredParams.joined(separator: ", "))>",
+                paramClause: renderedParamClause,
                 whereClause: " where \(renderedWhereClause)",
                 packParameters: packParameters
             )
         }
 
         let params = genericContent.trimmingCharacters(in: .whitespaces)
+        let renderedParamClause = params.isEmpty ? "" : "<\(params)>"
         return (
             name: name,
-            paramClause: "<\(params)>",
+            paramClause: renderedParamClause,
             whereClause: "",
             packParameters: packParameterNames(from: params.split(separator: ",").map {
                 $0.trimmingCharacters(in: .whitespaces)
