@@ -260,6 +260,24 @@ struct MakeInterfaceTests {
     }
 
     @Test
+    func protocolStaticMethodRequirementsRender() {
+        let interface = renderingBuilder.makeInterface(
+            demangledSymbols: [
+                "protocol descriptor for Mod.GestureLike",
+                "associated type descriptor for Mod.GestureLike.Value",
+                "method descriptor for static Mod.GestureLike.make(value: Mod.GestureLike.Value) -> Swift.Int",
+            ],
+            targetTriple: "arm64-apple-macosx15.0",
+            moduleName: "Mod",
+            compilerVersion: "Test"
+        )
+
+        let normalized = normalizedInterface(interface)
+        #expect(normalized.contains("public protocol GestureLike {"))
+        #expect(normalized.contains("static func make(value: GestureLike.Value) -> Swift.Int"))
+    }
+
+    @Test
     func associatedTypeConstraintsFromAssociatedConformanceDescriptors() {
         let interface = renderingBuilder.makeInterface(
             demangledSymbols: [

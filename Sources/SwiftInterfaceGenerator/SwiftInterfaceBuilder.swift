@@ -561,6 +561,7 @@ struct SwiftInterfaceBuilder: Sendable {
             if let callable = parseProtocolMethodDescriptor(from: line, moduleName: moduleName) {
                 var value = declaration(named: callable.owner, order: order)
                 let isInit = callable.rawSignature.hasPrefix("init(") || callable.rawSignature.hasPrefix("init<")
+                let isStaticRequirement = line.hasPrefix("method descriptor for static ")
                 if isInit {
                     value.addInitializer(
                         Declaration.Callable(
@@ -571,14 +572,17 @@ struct SwiftInterfaceBuilder: Sendable {
                         )
                     )
                 } else {
-                    value.addMethod(
-                        Declaration.Callable(
-                            rawSignature: callable.rawSignature,
-                            isStatic: false,
-                            isInitializer: false,
-                            order: order
-                        )
+                    let method = Declaration.Callable(
+                        rawSignature: callable.rawSignature,
+                        isStatic: isStaticRequirement,
+                        isInitializer: false,
+                        order: order
                     )
+                    if isStaticRequirement {
+                        value.addStaticMethod(method)
+                    } else {
+                        value.addMethod(method)
+                    }
                 }
                 setDeclaration(value)
                 continue
@@ -3816,12 +3820,21 @@ struct SwiftInterfaceBuilder: Sendable {
         from line: String,
         moduleName: String
     ) -> (owner: String, rawSignature: String)? {
-        let prefix = "method descriptor for \(moduleName)."
+        let prefix = "method descriptor for "
         guard line.hasPrefix(prefix) else {
             return nil
         }
 
-        let remainder = String(line.dropFirst(prefix.count))
+        var remainder = String(line.dropFirst(prefix.count))
+        if remainder.hasPrefix("static ") {
+            remainder.removeFirst("static ".count)
+        }
+
+        guard remainder.hasPrefix("\(moduleName).") else {
+            return nil
+        }
+        remainder.removeFirst("\(moduleName).".count)
+
         guard
             !remainder.contains("__allocating_init"),
             !containsAccessorLikeSymbol(remainder)
