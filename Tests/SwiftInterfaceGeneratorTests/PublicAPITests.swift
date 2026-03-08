@@ -328,6 +328,61 @@ func generateRecoversProtocolExtensionOpaquePropertyConstraintsForTBDInputs() as
 }
 
 @Test
+func generateOmitsUnresolvedProtocolExtensionOpaquePropertiesForTBDInputs() async throws {
+    let temporaryDirectory = try TemporaryDirectory(prefix: "SwiftInterfaceGeneratorOpaqueSkipTBD")
+    let frameworkURL = temporaryDirectory.url
+        .appendingPathComponent("Fixture.framework", isDirectory: true)
+        .appendingPathComponent("Fixture.tbd")
+    try FileManager.default.createDirectory(
+        at: frameworkURL.deletingLastPathComponent(),
+        withIntermediateDirectories: true
+    )
+    try """
+        --- !tapi-tbd
+        tbd-version: 5
+        targets: [ arm64-macos ]
+        install-name: /System/Library/Frameworks/Fixture.framework/Fixture
+        exports:
+          - targets: [ arm64-macos ]
+            symbols: [ ]
+        ...
+        """
+        .write(to: frameworkURL, atomically: true, encoding: .utf8)
+
+    let commandRunner = MockCommandRunner(
+        responses: [
+            .success(CommandResult(stdout: "raw nm output", stderr: "")),
+            .success(
+                CommandResult(
+                    stdout: [
+                        "protocol descriptor for Fixture.ShapeStyle",
+                        "property descriptor for (extension in Fixture):Fixture.ShapeStyle.secondary : some",
+                        "(extension in Fixture):Fixture.ShapeStyle.secondary.getter : some",
+                    ].joined(separator: "\n"),
+                    stderr: ""
+                )
+            ),
+        ]
+    )
+    let generator = SwiftInterfaceGenerator(
+        commandRunner: commandRunner,
+        compilerVersionProvider: { "Test Swift" }
+    )
+
+    let generatedInterface = try await generator.generate(
+        frameworkBinaryURL: frameworkURL,
+        repositoryRootURL: temporaryDirectory.url,
+        targetTriple: "arm64-apple-macosx15.0"
+    )
+    let interfaceContents = try String(contentsOf: generatedInterface.interfaceURL, encoding: .utf8)
+    let normalized = normalizedInterface(interfaceContents)
+
+    #expect(normalized.contains("public protocol ShapeStyle {"))
+    #expect(!normalized.contains("public var secondary: some { get }"))
+    #expect(!normalized.contains("extension ShapeStyle {"))
+}
+
+@Test
 func generateValidatesDiscoveredExternalModules() async throws {
     let temporaryDirectory = try TemporaryDirectory(prefix: "SwiftInterfaceGeneratorImports")
     let frameworkURL = temporaryDirectory.url
