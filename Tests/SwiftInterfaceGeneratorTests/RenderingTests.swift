@@ -1434,6 +1434,25 @@ struct ComplexRenderingTests {
     }
 
     @Test
+    func existentialCompositionUsesLeadingAny() {
+        let interface = renderingBuilder.makeInterface(
+            demangledSymbols: [
+                "protocol descriptor for Mod.AnyGestureResponder",
+                "protocol descriptor for Mod.EventBindingBridge",
+                "protocol descriptor for Mod.GestureGraphDelegate",
+                "nominal type descriptor for Mod.Container",
+                "Mod.Container.makeEventBindingBridge(bindingManager: Mod.EventBindingManager, responder: Mod.AnyGestureResponder) -> Mod.EventBindingBridge & Mod.GestureGraphDelegate",
+            ],
+            targetTriple: "arm64-apple-macosx15.0",
+            moduleName: "Mod",
+            compilerVersion: "Test"
+        )
+
+        let norm = normalizedInterface(interface)
+        #expect(norm.contains("public func makeEventBindingBridge(bindingManager: EventBindingManager, responder: any AnyGestureResponder) -> any EventBindingBridge & GestureGraphDelegate"))
+    }
+
+    @Test
     func sameModuleConstrainedExtensionMethodsRenderOnConcreteType() {
         let interface = renderingBuilder.makeInterface(
             demangledSymbols: [

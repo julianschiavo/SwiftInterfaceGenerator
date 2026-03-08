@@ -1346,9 +1346,10 @@ struct SwiftInterfaceBuilder: Sendable {
             return cleaned
         }
 
-        return ExistentialTypeRewriter(protocolNames: protocolNames)
+        let rewritten = ExistentialTypeRewriter(protocolNames: protocolNames)
             .visit(typeSyntax)
             .trimmedDescription
+        return normalizedExistentialComposition(in: rewritten)
     }
 
     private func parsedTypeSyntax(from source: String) -> TypeSyntax? {
@@ -2516,6 +2517,89 @@ struct SwiftInterfaceBuilder: Sendable {
         }
 
         return nil
+    }
+
+    private func normalizedExistentialComposition(in string: String) -> String {
+        let parts = splitTopLevelComposition(in: string)
+        guard parts.count > 1 else {
+            return string
+        }
+
+        let trimmedParts = parts.map { $0.trimmingCharacters(in: .whitespaces) }
+        guard trimmedParts.contains(where: { $0.hasPrefix("any ") }) else {
+            return string
+        }
+
+        let normalizedParts = trimmedParts.map { part in
+            guard part.hasPrefix("any ") else {
+                return part
+            }
+            return String(part.dropFirst("any ".count))
+        }
+
+        return "any " + normalizedParts.joined(separator: " & ")
+    }
+
+    private func splitTopLevelComposition(in string: String) -> [String] {
+        var parts: [String] = []
+        var angleDepth = 0
+        var braceDepth = 0
+        var bracketDepth = 0
+        var parenthesisDepth = 0
+        var previousCharacter: Character?
+        var componentStart = string.startIndex
+        var index = string.startIndex
+
+        while index < string.endIndex {
+            let character = string[index]
+            switch character {
+            case "(":
+                parenthesisDepth += 1
+            case ")":
+                if parenthesisDepth > 0 {
+                    parenthesisDepth -= 1
+                }
+            case "[":
+                bracketDepth += 1
+            case "]":
+                if bracketDepth > 0 {
+                    bracketDepth -= 1
+                }
+            case "{":
+                braceDepth += 1
+            case "}":
+                if braceDepth > 0 {
+                    braceDepth -= 1
+                }
+            case "<":
+                if previousCharacter != "-" {
+                    angleDepth += 1
+                }
+            case ">":
+                if previousCharacter != "-" && angleDepth > 0 {
+                    angleDepth -= 1
+                }
+            case "&":
+                if angleDepth == 0,
+                   braceDepth == 0,
+                   bracketDepth == 0,
+                   parenthesisDepth == 0 {
+                    parts.append(String(string[componentStart..<index]))
+                    componentStart = string.index(after: index)
+                }
+            default:
+                break
+            }
+
+            previousCharacter = character
+            index = string.index(after: index)
+        }
+
+        if componentStart < string.endIndex {
+            parts.append(String(string[componentStart...]))
+        }
+
+        return parts
     }
 
     private func combinedWhereClause(_ lhs: String, _ rhs: String) -> String {
