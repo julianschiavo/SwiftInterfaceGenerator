@@ -522,6 +522,34 @@ struct SwiftInterfaceBuilder: Sendable {
         return declarations
     }
 
+    func inferredModuleName(
+        from demangledSymbols: [String],
+        preferredModuleName: String
+    ) -> String? {
+        var counts: [String: Int] = [:]
+
+        for line in demangledSymbols {
+            guard let moduleName = inferredModuleName(from: line) else {
+                continue
+            }
+            counts[moduleName, default: 0] += 1
+        }
+
+        guard
+            let bestModule = counts.max(by: { lhs, rhs in
+                if lhs.value == rhs.value {
+                    return lhs.key > rhs.key
+                }
+                return lhs.value < rhs.value
+            })?.key,
+            bestModule != preferredModuleName
+        else {
+            return nil
+        }
+
+        return bestModule
+    }
+
     /// Renders the full `.swiftinterface` file content from discovered declarations.
     ///
     /// Generates the standard header (format version, compiler version, module flags),
@@ -2547,6 +2575,18 @@ struct SwiftInterfaceBuilder: Sendable {
         return String(line.dropFirst(prefix.count))
     }
 
+    private func inferredModuleName(from line: String) -> String? {
+        for prefix in Self.moduleInferencePrefixes where line.hasPrefix(prefix) {
+            let suffix = line.dropFirst(prefix.count)
+            guard let separator = suffix.firstIndex(of: ".") else {
+                return nil
+            }
+            return String(suffix[..<separator])
+        }
+
+        return nil
+    }
+
     /// Returns the parent type name if `fullName` is a nested type within a known declaration.
     ///
     /// For example, if `fullName` is `"Outer.Inner"` and `"Outer"` exists in `declarations`,
@@ -2691,6 +2731,13 @@ struct SwiftInterfaceBuilder: Sendable {
         }
         return frameworkBinaryURL.lastPathComponent
     }
+
+    private static let moduleInferencePrefixes: [String] = [
+        "protocol descriptor for ",
+        "nominal type descriptor for ",
+        "metaclass for ",
+        "class metadata base offset for ",
+    ]
 
     private static let swiftKeywords: Set<String> = [
         "associatedtype",

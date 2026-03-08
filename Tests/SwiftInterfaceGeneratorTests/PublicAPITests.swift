@@ -213,3 +213,53 @@ func generatePropagatesCommandFailures() async throws {
         #expect(stderr == "boom")
     }
 }
+
+@Test
+func generateInfersModuleNameFromDemangledSymbolsWhenBinaryNameDiffers() async throws {
+    let temporaryDirectory = try TemporaryDirectory(prefix: "SwiftInterfaceGeneratorTBD")
+    let frameworkURL = temporaryDirectory.url
+        .appendingPathComponent("SwiftUICore.framework", isDirectory: true)
+        .appendingPathComponent("SwiftUICore.tbd")
+    let commandRunner = MockCommandRunner(
+        responses: [
+            .success(CommandResult(stdout: "raw nm output", stderr: "")),
+            .success(
+                CommandResult(
+                    stdout: [
+                        "nominal type descriptor for SwiftUI.EdgeInsets",
+                        "property descriptor for SwiftUI.EdgeInsets.top : Swift.Int",
+                    ].joined(separator: "\n"),
+                    stderr: ""
+                )
+            ),
+        ]
+    )
+    let generator = SwiftInterfaceGenerator(
+        commandRunner: commandRunner,
+        compilerVersionProvider: { "Test Swift" }
+    )
+
+    let generatedInterface = try await generator.generate(
+        frameworkBinaryURL: frameworkURL,
+        repositoryRootURL: temporaryDirectory.url,
+        targetTriple: "arm64-apple-macosx15.0"
+    )
+    let interfaceContents = try String(contentsOf: generatedInterface.interfaceURL, encoding: .utf8)
+
+    #expect(generatedInterface.interfaceURL.path.contains("/SwiftUI.swiftmodule/"))
+    #expect(
+        normalizedInterface(interfaceContents)
+            == normalizedInterface(
+                """
+            // swift-interface-format-version: 1.0
+            // swift-compiler-version: Test Swift
+            // swift-module-flags: -target arm64-apple-macosx15.0 -enable-library-evolution -module-name SwiftUI
+            import Swift
+
+            public struct EdgeInsets {
+              public var top: Swift.Int { get }
+            }
+            """
+            )
+    )
+}

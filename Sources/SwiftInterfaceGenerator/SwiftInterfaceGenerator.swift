@@ -90,11 +90,27 @@ public struct SwiftInterfaceGenerator: Sendable {
         repositoryRootURL: URL,
         targetTriple: String
     ) async throws -> GeneratedSwiftInterface {
-        let moduleName = utilityBuilder.normalizedModuleName(for: frameworkBinaryURL)
+        let preferredModuleName = utilityBuilder.normalizedModuleName(for: frameworkBinaryURL)
         let outputRootURL = repositoryRootURL
             .standardizedFileURL
             .appendingPathComponent("tmp_module", isDirectory: true)
         let normalizedFrameworkBinaryURL = frameworkBinaryURL.standardizedFileURL
+
+        async let demangledSymbolsTask = loadDemangledSymbols(frameworkBinaryURL: normalizedFrameworkBinaryURL)
+        async let compilerVersionTask = loadCompilerVersion()
+        let demangledSymbols = try await demangledSymbolsTask
+        let compilerVersion = try await compilerVersionTask
+        var moduleName = preferredModuleName
+        var declarations = utilityBuilder.discoverDeclarations(from: demangledSymbols, moduleName: moduleName)
+        if declarations.isEmpty,
+           let inferredModuleName = utilityBuilder.inferredModuleName(
+               from: demangledSymbols,
+               preferredModuleName: preferredModuleName
+           ) {
+            moduleName = inferredModuleName
+            declarations = utilityBuilder.discoverDeclarations(from: demangledSymbols, moduleName: moduleName)
+        }
+
         let moduleDirectoryURL = outputRootURL
             .appendingPathComponent("\(moduleName).swiftmodule", isDirectory: true)
         let interfaceURL = moduleDirectoryURL
@@ -103,11 +119,6 @@ public struct SwiftInterfaceGenerator: Sendable {
         try? FileManager.default.removeItem(at: moduleDirectoryURL)
         try FileManager.default.createDirectory(at: moduleDirectoryURL, withIntermediateDirectories: true)
 
-        async let demangledSymbolsTask = loadDemangledSymbols(frameworkBinaryURL: normalizedFrameworkBinaryURL)
-        async let compilerVersionTask = loadCompilerVersion()
-        let demangledSymbols = try await demangledSymbolsTask
-        let compilerVersion = try await compilerVersionTask
-        let declarations = utilityBuilder.discoverDeclarations(from: demangledSymbols, moduleName: moduleName)
         let renderableExternalModules = try await loadRenderableExternalModules(
             declarations: declarations,
             moduleName: moduleName,
