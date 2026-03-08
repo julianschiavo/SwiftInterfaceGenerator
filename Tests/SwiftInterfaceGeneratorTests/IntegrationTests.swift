@@ -1814,6 +1814,37 @@ struct IntegrationTests {
     }
 
     @Test
+    func opaqueSubscriptWitnessPreservesConstraint() async throws {
+        let fixture = try integrationCompiler.compileFramework(
+            moduleName: "OpaqueSubscriptFixture",
+            sources: [
+                "OpaqueSubscriptFixture.swift": """
+                public protocol IndexedValues {
+                    associatedtype Value: BinaryInteger
+                    subscript(_ index: Int) -> Value { get }
+                }
+
+                public struct Counter: IndexedValues {
+                    public init() {}
+
+                    public subscript(_ index: Int) -> some BinaryInteger {
+                        index
+                    }
+                }
+                """
+            ]
+        )
+        let contents = try await generateInterface(fixture: fixture)
+        let normalized = normalizedInterface(contents)
+
+        #expect(normalized.contains("public protocol IndexedValues {"))
+        #expect(normalized.contains("associatedtype Value: Swift.BinaryInteger"))
+        #expect(normalized.contains("public struct Counter: IndexedValues"))
+        #expect(normalized.contains("public subscript(_: Swift.Int) -> some Swift.BinaryInteger { get }"))
+        #expect(!normalized.contains("public subscript(_: Swift.Int) -> some { get }"))
+    }
+
+    @Test
     func externalNeverConformanceRendersAsExtension() async throws {
         let fixture = try integrationCompiler.compileFramework(
             moduleName: "NeverConformanceFixture",

@@ -1064,8 +1064,17 @@ struct SwiftInterfaceBuilder: Sendable {
                 protocolNames: protocolNames,
                 moduleName: moduleName
             )) ?? subscriptMember.rawArguments
+            let rawReturnType = resolvedOpaqueSubscriptReturnType(
+                subscriptMember,
+                in: declaration,
+                declarations: declarations,
+                moduleName: moduleName
+            ) ?? subscriptMember.rawReturnType
+            guard cleanedTypeName(rawReturnType, moduleName: moduleName) != "some" else {
+                continue
+            }
             let renderedReturnType = renderedTypeName(
-                subscriptMember.rawReturnType,
+                rawReturnType,
                 protocolNames: protocolNames,
                 moduleName: moduleName
             )
@@ -1237,8 +1246,17 @@ struct SwiftInterfaceBuilder: Sendable {
                 protocolNames: protocolNames,
                 moduleName: moduleName
             )) ?? subscriptMember.rawArguments
+            let rawReturnType = resolvedOpaqueSubscriptReturnType(
+                subscriptMember,
+                in: declaration,
+                declarations: declarations,
+                moduleName: moduleName
+            ) ?? subscriptMember.rawReturnType
+            guard cleanedTypeName(rawReturnType, moduleName: moduleName) != "some" else {
+                continue
+            }
             let renderedReturnType = renderedTypeName(
-                subscriptMember.rawReturnType,
+                rawReturnType,
                 protocolNames: protocolNames,
                 moduleName: moduleName
             )
@@ -1483,8 +1501,17 @@ struct SwiftInterfaceBuilder: Sendable {
                 protocolNames: protocolNames,
                 moduleName: moduleName
             )) ?? subscriptMember.rawArguments
+            let rawReturnType = resolvedOpaqueSubscriptReturnType(
+                subscriptMember,
+                in: ownerDeclaration,
+                declarations: declarations,
+                moduleName: moduleName
+            ) ?? subscriptMember.rawReturnType
+            guard cleanedTypeName(rawReturnType, moduleName: moduleName) != "some" else {
+                continue
+            }
             let renderedReturnType = renderedTypeName(
-                subscriptMember.rawReturnType,
+                rawReturnType,
                 protocolNames: protocolNames,
                 moduleName: moduleName
             )
@@ -2168,6 +2195,66 @@ struct SwiftInterfaceBuilder: Sendable {
         return nil
     }
 
+    private func resolvedOpaqueSubscriptReturnType(
+        _ subscriptMember: Declaration.Subscript,
+        in declaration: Declaration,
+        declarations: [String: Declaration],
+        moduleName: String
+    ) -> String? {
+        guard cleanedTypeName(subscriptMember.rawReturnType, moduleName: moduleName) == "some" else {
+            return nil
+        }
+
+        let requirementKey = subscriptRequirementKey(
+            for: subscriptMember.rawArguments,
+            moduleName: moduleName
+        )
+
+        for protocolDeclaration in protocolDeclarations(
+            conformedToBy: declaration,
+            declarations: declarations,
+            moduleName: moduleName
+        ) {
+            for requirement in protocolDeclaration.subscripts {
+                guard subscriptRequirementKey(
+                    for: requirement.rawArguments,
+                    moduleName: moduleName
+                ) == requirementKey,
+                let opaqueType = opaqueType(
+                    fromRequirementReturnType: requirement.rawReturnType,
+                    in: protocolDeclaration,
+                    moduleName: moduleName
+                ) else {
+                    continue
+                }
+
+                return opaqueType
+            }
+
+            for property in protocolDeclaration.properties where property.name == "subscript" {
+                guard let functionType = parsedFunctionPropertyType(
+                    from: property.rawType,
+                    moduleName: moduleName
+                ),
+                subscriptRequirementKey(
+                    for: functionType.arguments,
+                    moduleName: moduleName
+                ) == requirementKey,
+                let opaqueType = opaqueType(
+                    fromRequirementReturnType: functionType.returnType,
+                    in: protocolDeclaration,
+                    moduleName: moduleName
+                ) else {
+                    continue
+                }
+
+                return opaqueType
+            }
+        }
+
+        return nil
+    }
+
     private func protocolDeclarations(
         conformedToBy declaration: Declaration,
         declarations: [String: Declaration],
@@ -2256,6 +2343,18 @@ struct SwiftInterfaceBuilder: Sendable {
         return "\(isStatic ? "static" : "instance")|\(components.name)|\(labels.joined(separator: ","))"
     }
 
+    private func subscriptRequirementKey(
+        for rawArguments: String,
+        moduleName: String
+    ) -> String {
+        let cleanedArguments = cleanedTypeName(rawArguments, moduleName: moduleName)
+        let labels = parsedTupleType(fromArgumentList: cleanedArguments)?.elements.map {
+            $0.firstName?.text ?? "_"
+        } ?? [cleanedArguments]
+
+        return labels.joined(separator: ",")
+    }
+
     private func parsedCallableSignatureComponents(
         from rawSignature: String
     ) -> (name: String, arguments: String, returnType: String)? {
@@ -2306,6 +2405,34 @@ struct SwiftInterfaceBuilder: Sendable {
             name: parseGenericClause(head, moduleName: "").name,
             arguments: arguments,
             returnType: returnType
+        )
+    }
+
+    private func parsedFunctionPropertyType(
+        from rawType: String,
+        moduleName: String
+    ) -> (arguments: String, returnType: String)? {
+        let cleanedRawType = cleanedTypeName(rawType, moduleName: moduleName)
+            .trimmingCharacters(in: .whitespaces)
+        guard let returnArrow = topLevelArrowRange(in: cleanedRawType) else {
+            return nil
+        }
+
+        let rawArguments = String(cleanedRawType[..<returnArrow.lowerBound])
+            .trimmingCharacters(in: .whitespaces)
+        let rawReturnType = String(cleanedRawType[returnArrow.upperBound...])
+            .trimmingCharacters(in: .whitespaces)
+
+        let arguments: String
+        if rawArguments.first == "(", rawArguments.last == ")" {
+            arguments = String(rawArguments.dropFirst().dropLast())
+        } else {
+            arguments = rawArguments
+        }
+
+        return (
+            arguments: arguments,
+            returnType: splitTrailingWhereClause(from: rawReturnType).returnType
         )
     }
 
