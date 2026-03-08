@@ -96,10 +96,11 @@ public struct SwiftInterfaceGenerator: Sendable {
             .appendingPathComponent("tmp_module", isDirectory: true)
         let normalizedFrameworkBinaryURL = frameworkBinaryURL.standardizedFileURL
 
-        async let demangledSymbolsTask = loadDemangledSymbols(frameworkBinaryURL: normalizedFrameworkBinaryURL)
+        async let symbolsTask = loadSymbols(frameworkBinaryURL: normalizedFrameworkBinaryURL)
         async let compilerVersionTask = loadCompilerVersion()
-        let demangledSymbols = try await demangledSymbolsTask
+        let symbols = try await symbolsTask
         let compilerVersion = try await compilerVersionTask
+        let demangledSymbols = symbols.demangledSymbols
         var moduleName = preferredModuleName
         var declarations = utilityBuilder.discoverDeclarations(from: demangledSymbols, moduleName: moduleName)
         if declarations.isEmpty,
@@ -138,6 +139,49 @@ public struct SwiftInterfaceGenerator: Sendable {
             moduleSearchRootURL: outputRootURL,
             log: "Generated \(interfaceURL.path) from \(normalizedFrameworkBinaryURL.path)"
         )
+    }
+
+    struct LoadedSymbols {
+        let demangledSymbols: [String]
+    }
+
+    /// Extracts and demangles exported symbols from a framework binary, resolving
+    /// opaque return type constraints where possible by reading opaque type
+    /// descriptors from the Mach-O binary.
+    func loadSymbols(frameworkBinaryURL: URL) async throws -> LoadedSymbols {
+        let rawSymbols = try await commandRunner.run(
+            executable: "nm",
+            arguments: ["-gU", frameworkBinaryURL.path],
+            stdin: nil
+        )
+        let demangled = try await commandRunner.run(
+            executable: "swift-demangle",
+            arguments: ["--compact"],
+            stdin: rawSymbols.stdout
+        )
+
+        let constraints = OpaqueTypeResolver.resolveConstraints(
+            binaryURL: frameworkBinaryURL,
+            rawNMOutput: rawSymbols.stdout,
+            demangledNMOutput: demangled.stdout
+        )
+
+        var normalizedSymbols = Array(
+            demangled.stdout
+                .split(whereSeparator: \.isNewline)
+                .lazy
+                .map { Self.normalizedSymbolLine(String($0)) }
+                .filter { !$0.isEmpty }
+        )
+
+        if !constraints.isEmpty {
+            normalizedSymbols = OpaqueTypeResolver.applyConstraints(
+                to: normalizedSymbols,
+                constraints: constraints
+            )
+        }
+
+        return LoadedSymbols(demangledSymbols: normalizedSymbols)
     }
 
     /// Extracts and demangles exported symbols from a framework binary.

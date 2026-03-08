@@ -1697,6 +1697,48 @@ struct IntegrationTests {
         )
     }
 
+    // MARK: - Bare Opaque Types
+
+    @Test
+    func unresolvedOpaqueReturnTypePreservesConstraint() async throws {
+        let fixture = try integrationCompiler.compileFramework(
+            moduleName: "BareOpaqueFixture",
+            sources: [
+                "BareOpaqueFixture.swift": """
+                public protocol Shape {
+                    func path() -> String
+                }
+
+                public struct Circle: Shape {
+                    public init() {}
+                    public func path() -> String { "circle" }
+                }
+
+                public struct Canvas {
+                    public init() {}
+                    public func makeShape() -> some Shape {
+                        Circle()
+                    }
+                    public var currentShape: some Shape {
+                        Circle()
+                    }
+                    public func regularMethod() -> String { "hello" }
+                }
+                """
+            ]
+        )
+        let contents = try await generateInterface(fixture: fixture)
+        let normalized = normalizedInterface(contents)
+
+        // Opaque return types should preserve the protocol constraint
+        #expect(normalized.contains("-> some Shape"))
+        #expect(normalized.contains(": some Shape {"))
+        // The regular method should still be present
+        #expect(normalized.contains("public func regularMethod() -> Swift.String"))
+        // Canvas struct should still exist
+        #expect(normalized.contains("public struct Canvas"))
+    }
+
     // MARK: - Helpers
 
     private func generateInterface(fixture: CompiledFrameworkFixture) async throws -> String {

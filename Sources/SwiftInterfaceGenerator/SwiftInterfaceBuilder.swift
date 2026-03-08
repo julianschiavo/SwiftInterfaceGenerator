@@ -771,6 +771,9 @@ struct SwiftInterfaceBuilder: Sendable {
                 declarations: declarations,
                 moduleName: moduleName
             ) ?? property.rawType
+            guard cleanedTypeName(rawType, moduleName: moduleName) != "some" else {
+                continue
+            }
             let renderedType = renderedTypeName(
                 rawType,
                 protocolNames: protocolNames,
@@ -1216,6 +1219,9 @@ struct SwiftInterfaceBuilder: Sendable {
             declarations: declarations,
             moduleName: moduleName
         ) ?? returnType
+        guard cleanedTypeName(resolvedReturnType, moduleName: moduleName) != "some" else {
+            return nil
+        }
         let renderedReturnType = renderedTypeName(
             resolvedReturnType,
             protocolNames: protocolNames,
