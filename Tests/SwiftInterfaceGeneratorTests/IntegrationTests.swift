@@ -887,6 +887,38 @@ struct IntegrationTests {
         )
     }
 
+    @Test
+    func constrainedGenericStructKeepsAssociatedTypeOwnerConstraint() async throws {
+        let fixture = try integrationCompiler.compileFramework(
+            moduleName: "ConstrainedGenericFixture",
+            sources: [
+                "ConstrainedGenericFixture.swift": """
+                public protocol HostedValue {
+                    associatedtype Host
+                    associatedtype Coordinator
+                }
+
+                public struct LeafRecord<Content: HostedValue> {
+                    public let content: Content
+
+                    public init(content: Content, host: Content.Host, coordinator: Content.Coordinator) {
+                        self.content = content
+                    }
+                }
+                """
+            ]
+        )
+        let contents = try await generateInterface(fixture: fixture)
+        let normalized = normalizedInterface(contents)
+
+        #expect(
+            normalized.contains("public struct LeafRecord<A : HostedValue> {")
+                || normalized.contains("public struct LeafRecord<A> where A : HostedValue {")
+        )
+        #expect(normalized.contains("public init(content: A, host: A.Host, coordinator: A.Coordinator)"))
+        #expect(!normalized.contains("public struct LeafRecord<A> {"))
+    }
+
     // MARK: - Method Effects
 
     @Test

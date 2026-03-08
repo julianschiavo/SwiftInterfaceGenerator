@@ -939,6 +939,12 @@ struct SwiftInterfaceBuilder: Sendable {
             moduleName: moduleName
         )
         let genericClause = genericParameters.isEmpty ? "" : "<\(genericParameters.joined(separator: ", "))>"
+        let genericWhereClause = renderedDeclarationGenericWhereClause(
+            for: declaration,
+            genericParameters: genericParameters,
+            declarations: declarations,
+            moduleName: moduleName
+        )
         let name = escapedIdentifier(simpleName(of: fullName))
         let conformanceClause = renderedConformanceClause(
             for: declaration,
@@ -954,13 +960,13 @@ struct SwiftInterfaceBuilder: Sendable {
         case .protocol:
             header = "\(indent)public protocol \(name)\(conformanceClause) {"
         case .struct:
-            header = "\(indent)public struct \(name)\(genericClause)\(conformanceClause) {"
+            header = "\(indent)public struct \(name)\(genericClause)\(conformanceClause)\(genericWhereClause) {"
         case .class where isOpenClass:
-            header = "\(indent)open class \(name)\(genericClause)\(conformanceClause) {"
+            header = "\(indent)open class \(name)\(genericClause)\(conformanceClause)\(genericWhereClause) {"
         case .class:
-            header = "\(indent)public final class \(name)\(genericClause)\(conformanceClause) {"
+            header = "\(indent)public final class \(name)\(genericClause)\(conformanceClause)\(genericWhereClause) {"
         case .enum:
-            header = "\(indent)public enum \(name)\(genericClause)\(conformanceClause) {"
+            header = "\(indent)public enum \(name)\(genericClause)\(conformanceClause)\(genericWhereClause) {"
         }
 
         var body: [String] = []
@@ -1790,6 +1796,125 @@ struct SwiftInterfaceBuilder: Sendable {
 
         return Array(genericParameters.prefix(arity))
     }
+
+    private func renderedDeclarationGenericWhereClause(
+        for declaration: Declaration,
+        genericParameters: [String],
+        declarations: [String: Declaration],
+        moduleName: String
+    ) -> String {
+        let constraints = inferredDeclarationGenericConstraints(
+            for: declaration,
+            genericParameters: genericParameters,
+            declarations: declarations,
+            moduleName: moduleName
+        )
+        guard !constraints.isEmpty else {
+            return ""
+        }
+        return " where \(constraints.joined(separator: ", "))"
+    }
+
+    private func inferredDeclarationGenericConstraints(
+        for declaration: Declaration,
+        genericParameters: [String],
+        declarations: [String: Declaration],
+        moduleName: String
+    ) -> [String] {
+        guard !genericParameters.isEmpty else {
+            return []
+        }
+
+        let genericParameterSet = Set(genericParameters)
+        let associatedTypeReferences = declarationAssociatedTypeReferences(
+            for: declaration,
+            genericParameters: genericParameterSet,
+            moduleName: moduleName
+        )
+
+        return genericParameters.compactMap { parameter in
+            guard let members = associatedTypeReferences[parameter], !members.isEmpty,
+                  let protocolDeclaration = protocolDeclaringAssociatedTypes(
+                    members,
+                    declarations: declarations
+                  ) else {
+                return nil
+            }
+
+            return "\(parameter) : \(renderedQualifiedDeclarationName(protocolDeclaration.fullName, moduleName: moduleName))"
+        }
+    }
+
+    private func declarationAssociatedTypeReferences(
+        for declaration: Declaration,
+        genericParameters: Set<String>,
+        moduleName: String
+    ) -> [String: Set<String>] {
+        declaration.rawTypeFragments.reduce(into: [String: Set<String>]()) { result, fragment in
+            for (parameter, members) in associatedTypeMemberReferences(
+                in: fragment,
+                genericParameters: genericParameters,
+                moduleName: moduleName
+            ) {
+                result[parameter, default: []].formUnion(members)
+            }
+        }
+    }
+
+    private func associatedTypeMemberReferences(
+        in fragment: String,
+        genericParameters: Set<String>,
+        moduleName: String
+    ) -> [String: Set<String>] {
+        let cleanedFragment = cleanedTypeName(fragment, moduleName: moduleName)
+        let pattern = #/\b([A-Z][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\b/#
+
+        return cleanedFragment.matches(of: pattern).reduce(into: [String: Set<String>]()) { result, match in
+            let parameter = String(match.1)
+            guard genericParameters.contains(parameter) else {
+                return
+            }
+
+            result[parameter, default: []].insert(String(match.2))
+        }
+    }
+
+    private func protocolDeclaringAssociatedTypes(
+        _ associatedTypeNames: Set<String>,
+        declarations: [String: Declaration]
+    ) -> Declaration? {
+        guard !associatedTypeNames.isEmpty else {
+            return nil
+        }
+
+        let candidates = declarations.values
+            .filter { $0.resolvedKind == .protocol }
+            .compactMap { declaration -> (declaration: Declaration, extraCount: Int)? in
+                let providedNames = Set(declaration.associatedTypes.map(\.name))
+                guard providedNames.isSuperset(of: associatedTypeNames) else {
+                    return nil
+                }
+
+                return (declaration, providedNames.count - associatedTypeNames.count)
+            }
+            .sorted {
+                if $0.extraCount != $1.extraCount {
+                    return $0.extraCount < $1.extraCount
+                }
+                return $0.declaration.fullName < $1.declaration.fullName
+            }
+
+        guard let bestMatch = candidates.first else {
+            return nil
+        }
+        if let nextBest = candidates.dropFirst().first,
+           nextBest.extraCount == bestMatch.extraCount {
+            return nil
+        }
+
+        return bestMatch.declaration
+    }
+
     /// Discovers which external modules are referenced in the given declarations.
     ///
     /// Scans all conformances, property types, method signatures, and enum payloads
