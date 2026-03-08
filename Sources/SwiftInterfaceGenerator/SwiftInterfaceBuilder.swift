@@ -248,12 +248,13 @@ struct SwiftInterfaceBuilder: Sendable {
     ) -> [String: Declaration] {
         var declarations: [String: Declaration] = [:]
         let sortedSymbols = SortedSymbols(demangledSymbols)
+        let protocolDescriptorPrefix = "protocol descriptor for \(moduleName)."
+        let nominalTypePrefix = "nominal type descriptor for \(moduleName)."
+        let metaclassPrefix = "metaclass for \(moduleName)."
+        let classMetadataPrefix = "class metadata base offset for \(moduleName)."
         let concreteTypeNames = Set(
             demangledSymbols.compactMap {
-                extractedTypeName(
-                    from: $0,
-                    prefix: "nominal type descriptor for \(moduleName)."
-                )
+                extractedTypeName(from: $0, prefix: nominalTypePrefix)
             }
         )
 
@@ -266,38 +267,26 @@ struct SwiftInterfaceBuilder: Sendable {
         }
 
         for (order, line) in demangledSymbols.enumerated() {
-            if let fullName = extractedTypeName(
-                from: line,
-                prefix: "protocol descriptor for \(moduleName)."
-            ) {
+            if let fullName = extractedTypeName(from: line, prefix: protocolDescriptorPrefix) {
                 var value = declaration(named: fullName, order: order)
                 value.isProtocol = true
                 setDeclaration(value)
                 continue
             }
 
-            if let fullName = extractedTypeName(
-                from: line,
-                prefix: "nominal type descriptor for \(moduleName)."
-            ) {
+            if let fullName = extractedTypeName(from: line, prefix: nominalTypePrefix) {
                 setDeclaration(declaration(named: fullName, order: order))
                 continue
             }
 
-            if let fullName = extractedTypeName(
-                from: line,
-                prefix: "metaclass for \(moduleName)."
-            ) {
+            if let fullName = extractedTypeName(from: line, prefix: metaclassPrefix) {
                 var value = declaration(named: fullName, order: order)
                 value.isClass = true
                 setDeclaration(value)
                 continue
             }
 
-            if let fullName = extractedTypeName(
-                from: line,
-                prefix: "class metadata base offset for \(moduleName)."
-            ) {
+            if let fullName = extractedTypeName(from: line, prefix: classMetadataPrefix) {
                 var value = declaration(named: fullName, order: order)
                 value.isClass = true
                 setDeclaration(value)
@@ -1701,18 +1690,15 @@ struct SwiftInterfaceBuilder: Sendable {
         }
 
         let remainder = String(line.dropFirst(prefix.count))
-        let openingParenthesis: String.Index
-        if let subscriptRange = remainder.range(of: ".subscript(") {
-            openingParenthesis = remainder.index(before: subscriptRange.upperBound)
-        } else {
+        guard let subscriptRange = remainder.range(of: ".subscript(") else {
             return nil
         }
+        let openingParenthesis = remainder.index(before: subscriptRange.upperBound)
         guard
             let closingParenthesis = matchingClosingParenthesis(
                 in: remainder,
                 from: openingParenthesis
             ),
-            let subscriptRange = remainder.range(of: ".subscript("),
             let returnArrow = remainder.range(
                 of: " -> ",
                 range: remainder.index(after: closingParenthesis)..<remainder.endIndex
