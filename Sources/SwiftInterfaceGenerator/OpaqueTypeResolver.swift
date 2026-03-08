@@ -91,10 +91,14 @@ struct OpaqueTypeResolver {
             ) else {
                 continue
             }
-            if !protocols.isEmpty {
+            let normalizedProtocols = normalizedProtocolNames(
+                protocols,
+                for: parentDescription
+            )
+            if !normalizedProtocols.isEmpty {
                 results.append(ResolvedConstraint(
                     parentDescription: parentDescription,
-                    protocolNames: protocols
+                    protocolNames: normalizedProtocols
                 ))
             }
         }
@@ -367,5 +371,69 @@ struct OpaqueTypeResolver {
         }
 
         return protocols
+    }
+
+    private static func normalizedProtocolNames(
+        _ protocols: [String],
+        for parentDescription: String
+    ) -> [String] {
+        let deduplicated = protocols.reduce(into: [String]()) { result, protocolName in
+            guard !result.contains(protocolName) else {
+                return
+            }
+            result.append(protocolName)
+        }
+
+        guard
+            let extensionOwner = extensionOwnerName(in: parentDescription),
+            deduplicated.count > 1
+        else {
+            return deduplicated
+        }
+
+        let filtered = deduplicated.filter { protocolName in
+            !matchesExtensionOwner(protocolName, extensionOwner: extensionOwner)
+        }
+
+        return filtered.isEmpty ? deduplicated : filtered
+    }
+
+    private static func extensionOwnerName(in parentDescription: String) -> String? {
+        guard parentDescription.hasPrefix("(extension in "),
+              let extensionSeparator = parentDescription.range(of: "):")
+        else {
+            return nil
+        }
+
+        let remainder = String(parentDescription[extensionSeparator.upperBound...])
+        let memberPath: String
+        if let propertySuffix = remainder.range(of: " : some", options: .backwards) {
+            memberPath = String(remainder[..<propertySuffix.lowerBound])
+        } else if let functionSuffix = remainder.range(of: " -> some", options: .backwards) {
+            memberPath = String(remainder[..<functionSuffix.lowerBound])
+        } else {
+            return nil
+        }
+
+        let ownerPath = memberPath.firstIndex(of: "(").map {
+            String(memberPath[..<$0])
+        } ?? memberPath
+        guard let memberSeparator = ownerPath.lastIndex(of: ".") else {
+            return nil
+        }
+
+        return String(ownerPath[..<memberSeparator])
+    }
+
+    private static func matchesExtensionOwner(
+        _ protocolName: String,
+        extensionOwner: String
+    ) -> Bool {
+        protocolName == extensionOwner
+            || simpleName(of: protocolName) == simpleName(of: extensionOwner)
+    }
+
+    private static func simpleName(of qualifiedName: String) -> String {
+        qualifiedName.split(separator: ".").last.map(String.init) ?? qualifiedName
     }
 }

@@ -1772,6 +1772,48 @@ struct IntegrationTests {
     }
 
     @Test
+    func protocolExtensionOpaquePropertyPreservesConstraint() async throws {
+        let fixture = try integrationCompiler.compileFramework(
+            moduleName: "ProtocolExtensionOpaqueFixture",
+            sources: [
+                "ProtocolExtensionOpaqueFixture.swift": """
+                public protocol Marker {}
+
+                public struct Token: Marker {
+                    public init() {}
+                }
+
+                public protocol ViewLike {
+                    associatedtype Body: Marker
+                    var body: Body { get }
+                }
+
+                public protocol StyleableView: ViewLike {}
+
+                public extension StyleableView {
+                    var body: some Marker {
+                        Token()
+                    }
+                }
+
+                public struct Styled: StyleableView {
+                    public init() {}
+                }
+                """
+            ]
+        )
+        let contents = try await generateInterface(fixture: fixture)
+        let normalized = normalizedInterface(contents)
+
+        #expect(normalized.contains("public protocol ViewLike {"))
+        #expect(normalized.contains("associatedtype Body: Marker"))
+        #expect(normalized.contains("extension StyleableView {"))
+        #expect(normalized.contains("public var body: some Marker { get }"))
+        #expect(!normalized.contains("public var body: some { get }"))
+        #expect(normalized.contains("public struct Styled: StyleableView"))
+    }
+
+    @Test
     func constrainedExtensionSubscriptStaysOnGenericOwner() async throws {
         let fixture = try integrationCompiler.compileFramework(
             moduleName: "ConstrainedSubscriptFixture",
