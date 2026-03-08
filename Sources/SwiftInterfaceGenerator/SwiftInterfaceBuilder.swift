@@ -2816,7 +2816,8 @@ struct SwiftInterfaceBuilder: Sendable {
         guard let member = parseOwnerMemberPath(path, moduleName: moduleName) else {
             return nil
         }
-        if isExtensionMember, !allowedExtensionOwners.contains(member.owner) {
+        let resolvedOwner = removingGenericArguments(from: member.owner)
+        if isExtensionMember, !allowedExtensionOwners.contains(resolvedOwner) {
             return nil
         }
 
@@ -2831,7 +2832,7 @@ struct SwiftInterfaceBuilder: Sendable {
             || sortedSymbols.containsPrefix(dispatchSetterPrefix)
 
         return (
-            owner: member.owner,
+            owner: resolvedOwner,
             name: member.name,
             rawType: rawType,
             isStatic: isStatic,
@@ -2893,7 +2894,8 @@ struct SwiftInterfaceBuilder: Sendable {
         }
 
         let owner = String(remainder[..<subscriptRange.lowerBound])
-        if isExtensionMember, !allowedExtensionOwners.contains(removingGenericArguments(from: owner)) {
+        let resolvedOwner = removingGenericArguments(from: owner)
+        if isExtensionMember, !allowedExtensionOwners.contains(resolvedOwner) {
             return nil
         }
         let rawArguments = String(remainder[subscriptRange.upperBound..<closingParenthesis])
@@ -2912,7 +2914,7 @@ struct SwiftInterfaceBuilder: Sendable {
         }
 
         return (
-            owner: owner,
+            owner: resolvedOwner,
             rawArguments: rawArguments,
             rawReturnType: rawReturnType,
             hasSetter: hasSetter

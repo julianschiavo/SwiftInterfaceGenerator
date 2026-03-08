@@ -1771,6 +1771,43 @@ struct IntegrationTests {
         #expect(!normalized.contains("public protocol PrimitiveView: View {\n  var body: Swift.Never { get }"))
     }
 
+    @Test
+    func constrainedExtensionSubscriptStaysOnGenericOwner() async throws {
+        let fixture = try integrationCompiler.compileFramework(
+            moduleName: "ConstrainedSubscriptFixture",
+            sources: [
+                "ConstrainedSubscriptFixture.swift": """
+                public struct AccessibilityTrait {}
+
+                public struct AccessibilityTraitSet: OptionSet {
+                    public let rawValue: UInt64
+
+                    public init(rawValue: UInt64) {
+                        self.rawValue = rawValue
+                    }
+                }
+
+                public struct AccessibilityNullableOptionSet<A> {
+                    public init() {}
+                }
+
+                public extension AccessibilityNullableOptionSet where A == AccessibilityTraitSet {
+                    subscript(_ trait: AccessibilityTrait, default defaultValue: Bool) -> Bool {
+                        get { defaultValue }
+                        set {}
+                    }
+                }
+                """
+            ]
+        )
+        let contents = try await generateInterface(fixture: fixture)
+        let normalized = normalizedInterface(contents)
+
+        #expect(normalized.contains("public struct AccessibilityNullableOptionSet<A> {"))
+        #expect(normalized.contains("public subscript(_: AccessibilityTrait, `default`: Swift.Bool) -> Swift.Bool { get set }"))
+        #expect(!normalized.contains("public struct AccessibilityTraitSet>"))
+    }
+
     // MARK: - Unavailable Module Filtering
 
     @Test
