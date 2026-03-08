@@ -4087,10 +4087,98 @@ struct SwiftInterfaceBuilder: Sendable {
             return (returnSection, "")
         }
 
+        let trailingClause = String(returnSection[whereRange.lowerBound...]).trimmingCharacters(in: .whitespaces)
+        if let inlineSplit = splitInlinedWhereClause(from: returnSection, whereRange: whereRange) {
+            return inlineSplit
+        }
+
+        guard isFunctionWhereClause(trailingClause) else {
+            return (returnSection, "")
+        }
+
         return (
             String(returnSection[..<whereRange.lowerBound]).trimmingCharacters(in: .whitespaces),
-            String(returnSection[whereRange.lowerBound...]).trimmingCharacters(in: .whitespaces)
+            trailingClause
         )
+    }
+
+    private func splitInlinedWhereClause(
+        from returnSection: String,
+        whereRange: Range<String.Index>
+    ) -> (returnType: String, whereClause: String)? {
+        let constraintStart = whereRange.upperBound
+        var angleDepth = 0
+        var parenthesisDepth = 0
+        var bracketDepth = 0
+        var endOfConstraints = returnSection.endIndex
+        var index = constraintStart
+
+        while index < returnSection.endIndex {
+            let character = returnSection[index]
+            switch character {
+            case "<":
+                angleDepth += 1
+            case ">":
+                if angleDepth > 0 {
+                    angleDepth -= 1
+                } else if angleDepth == 0 && parenthesisDepth == 0 && bracketDepth == 0 {
+                    guard returnSection.index(after: index) < returnSection.endIndex,
+                          returnSection[returnSection.index(after: index)] == "." else {
+                        return nil
+                    }
+                    endOfConstraints = index
+                    break
+                }
+            case "(":
+                parenthesisDepth += 1
+            case ")":
+                parenthesisDepth = max(0, parenthesisDepth - 1)
+            case "[":
+                bracketDepth += 1
+            case "]":
+                bracketDepth = max(0, bracketDepth - 1)
+            default:
+                break
+            }
+            index = returnSection.index(after: index)
+        }
+
+        guard endOfConstraints != returnSection.endIndex else {
+            return nil
+        }
+
+        let whereClause = String(returnSection[whereRange.lowerBound...endOfConstraints])
+            .trimmingCharacters(in: .whitespaces)
+            .dropFirst("where ".count)
+            .trimmingCharacters(in: .whitespaces)
+            .trimmingCharacters(in: CharacterSet(charactersIn: ">"))
+
+        let leadingType = String(returnSection[..<whereRange.lowerBound])
+        let suffix = String(returnSection[returnSection.index(after: endOfConstraints)...])
+        let cleanedLeadingType = leadingType.hasSuffix("<")
+            ? String(leadingType.dropLast())
+            : leadingType
+        let cleanedWhere = "where \(whereClause)"
+        let renderedWhere = String(cleanedWhere.trimmingCharacters(in: .whitespaces))
+
+        guard !genericRequirementTokens(in: renderedWhere).isEmpty else {
+            return nil
+        }
+
+        return (
+            "\(cleanedLeadingType)\(suffix)",
+            renderedWhere
+        )
+    }
+
+    private func isFunctionWhereClause(_ clause: String) -> Bool {
+        guard clause.hasPrefix("where ") else { return false }
+        var parser = Parser("func x() \(clause) {}")
+        let declaration = DeclSyntax.parse(from: &parser)
+        guard let function = declaration.as(FunctionDeclSyntax.self) else {
+            return false
+        }
+        return function.genericWhereClause != nil
     }
 
     private func splitImplicitVoidSignature(from trailingSignature: String) -> (effects: String, whereClause: String) {

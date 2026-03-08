@@ -1577,6 +1577,28 @@ struct ComplexRenderingTests {
     }
 
     @Test
+    func trailingWhereConstraintInReturnTypeIsNotParsedAsTypeSuffix() {
+        let interface = renderingBuilder.makeInterface(
+            demangledSymbols: [
+                "nominal type descriptor for Mod.Container",
+                "Mod.Container.init<A>(_: A) -> Mod.Container<A>",
+                "nominal type descriptor for Mod.Container.IndexSequence",
+                "Mod.Container.IndexSequence.makeIterator() -> Mod.Container<A>< where A: Swift.Strideable, A.Stride: Swift.SignedInteger>.IndexSequence.Iterator",
+            ],
+            targetTriple: "arm64-apple-macosx15.0",
+            moduleName: "Mod",
+            compilerVersion: "Test"
+        )
+
+        let norm = normalizedInterface(interface)
+        let makeIteratorLine = norm
+            .split(whereSeparator: \.isNewline)
+            .first(where: { $0.contains("func makeIterator()") }) ?? ""
+
+        #expect(!makeIteratorLine.contains("< where "))
+    }
+
+    @Test
     func existentialCompositionUsesLeadingAny() {
         let interface = renderingBuilder.makeInterface(
             demangledSymbols: [
