@@ -1011,6 +1011,32 @@ struct SwiftInterfaceBuilder: Sendable {
             body.append("\(indent)  \(memberAccessPrefix)typealias \(escapedIdentifier(typealiasName)) = Self")
         }
 
+        for (typealiasName, rawType) in defaultAssociatedTypeAliases(
+            for: declaration,
+            declarations: declarations,
+            moduleName: moduleName
+        ) {
+            guard
+                !containsUnrenderableExternalModuleReference(
+                    rawType,
+                    allowedPrefixes: allowedPrefixes
+                ),
+                !containsUnresolvedAssociatedTypeReference(rawType)
+            else {
+                continue
+            }
+
+            let renderedAliasType = renderedDeclaredTypeName(
+                rawType,
+                declarations: declarations,
+                protocolNames: protocolNames,
+                moduleName: moduleName
+            )
+            body.append(
+                "\(indent)  \(memberAccessPrefix)typealias \(escapedIdentifier(typealiasName)) = \(renderedAliasType)"
+            )
+        }
+
         for enumCase in declaration.enumCases.sorted(by: { $0.order < $1.order }) {
             if let rawPayload = enumCase.rawPayload {
                 guard
@@ -1720,6 +1746,162 @@ struct SwiftInterfaceBuilder: Sendable {
         }
 
         return typealiases
+    }
+
+    private func defaultAssociatedTypeAliases(
+        for declaration: Declaration,
+        declarations: [String: Declaration],
+        moduleName: String
+    ) -> [(name: String, rawType: String)] {
+        guard declaration.resolvedKind != .protocol else {
+            return []
+        }
+
+        let conformedProtocols = resolvedProtocolConformances(
+            from: declaration.conformances,
+            declarations: declarations,
+            moduleName: moduleName
+        )
+        guard !conformedProtocols.isEmpty else {
+            return []
+        }
+
+        var aliases: [(name: String, rawType: String)] = []
+        var seenAliasNames = Set(selfAliasedAssociatedTypes(
+            for: declaration,
+            declarations: declarations,
+            moduleName: moduleName
+        ))
+
+        for protocolDeclaration in conformedProtocols {
+            for property in protocolDeclaration.extensionProperties where !property.isStatic && property.extensionWhereClause.isEmpty {
+                guard let associatedTypeName = associatedTypeAliasNameSatisfied(
+                    by: property,
+                    across: conformedProtocols,
+                    moduleName: moduleName
+                ) else {
+                    continue
+                }
+
+                guard seenAliasNames.insert(associatedTypeName).inserted else {
+                    continue
+                }
+                aliases.append((associatedTypeName, property.rawType))
+            }
+        }
+
+        return aliases
+    }
+
+    private func resolvedProtocolConformances(
+        from rawConformances: [String],
+        declarations: [String: Declaration],
+        moduleName: String
+    ) -> [Declaration] {
+        var resolved: [Declaration] = []
+        var seenProtocolNames: Set<String> = []
+
+        func visit(_ rawConformance: String) {
+            let cleanedConformance = cleanedTypeName(rawConformance, moduleName: moduleName)
+            guard let protocolDeclaration = declarations.values.first(where: {
+                $0.resolvedKind == .protocol
+                    && (
+                        cleanedTypeName($0.fullName, moduleName: moduleName) == cleanedConformance
+                            || simpleName(of: $0.fullName) == cleanedConformance
+                    )
+            }) else {
+                return
+            }
+
+            guard seenProtocolNames.insert(protocolDeclaration.fullName).inserted else {
+                return
+            }
+
+            resolved.append(protocolDeclaration)
+            for inheritedConformance in protocolDeclaration.conformances {
+                visit(inheritedConformance)
+            }
+        }
+
+        for conformance in rawConformances {
+            visit(conformance)
+        }
+
+        return resolved
+    }
+
+    private func associatedTypeAliasNameSatisfied(
+        by property: Declaration.Property,
+        across protocolDeclarations: [Declaration],
+        moduleName: String
+    ) -> String? {
+        guard !containsPlaceholderAssociatedTypeReference(property.rawType, moduleName: moduleName) else {
+            return nil
+        }
+
+        var candidateNames: Set<String> = []
+        for protocolDeclaration in protocolDeclarations {
+            for requirement in protocolDeclaration.properties where requirement.name == property.name && !requirement.isStatic {
+                guard let associatedTypeName = associatedTypeRequirementName(
+                    for: requirement,
+                    in: protocolDeclaration,
+                    moduleName: moduleName
+                ) else {
+                    continue
+                }
+                candidateNames.insert(associatedTypeName)
+            }
+        }
+
+        guard candidateNames.count == 1 else {
+            return nil
+        }
+
+        return candidateNames.first
+    }
+
+    private func associatedTypeRequirementName(
+        for property: Declaration.Property,
+        in protocolDeclaration: Declaration,
+        moduleName: String
+    ) -> String? {
+        let associatedTypeNames = Set(protocolDeclaration.associatedTypes.map(\.name))
+        guard !associatedTypeNames.isEmpty else {
+            return nil
+        }
+
+        let matchingNames = associatedTypeReferences(
+            in: property.rawType,
+            moduleName: moduleName
+        ).filter { associatedTypeNames.contains($0) }
+
+        guard matchingNames.count == 1 else {
+            return nil
+        }
+
+        return matchingNames.first
+    }
+
+    private func associatedTypeReferences(
+        in rawType: String,
+        moduleName: String
+    ) -> Set<String> {
+        let cleanedFragment = cleanedTypeName(rawType, moduleName: moduleName)
+        let pattern = #/\b(?:Self|[A-Z][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\b/#
+
+        return Set(
+            cleanedFragment.matches(of: pattern).map { match in
+                String(match.1)
+            }
+        )
+    }
+
+    private func containsPlaceholderAssociatedTypeReference(
+        _ rawType: String,
+        moduleName: String
+    ) -> Bool {
+        cleanedTypeName(rawType, moduleName: moduleName)
+            .contains(/\b(?:Self|[A-Z][0-9]*)\.[A-Z][A-Za-z0-9_]*\b/)
     }
 
     /// Normalizes conformance lists for declarations and associated types.

@@ -1804,6 +1804,38 @@ struct IntegrationTests {
     }
 
     @Test
+    func protocolExtensionDefaultPropertyMaterializesConcreteAssociatedTypealias() async throws {
+        let fixture = try integrationCompiler.compileFramework(
+            moduleName: "ProtocolExtensionAssociatedTypeFixture",
+            sources: [
+                "ProtocolExtensionAssociatedTypeFixture.swift": """
+                public protocol View {
+                    associatedtype Body
+                    var body: Self.Body { get }
+                }
+
+                public protocol PrimitiveView: View {}
+
+                public extension PrimitiveView {
+                    var body: Never {
+                        fatalError()
+                    }
+                }
+
+                public struct Leaf: PrimitiveView {
+                    public init() {}
+                }
+                """
+            ]
+        )
+        let contents = try await generateInterface(fixture: fixture)
+        let normalized = normalizedInterface(contents)
+
+        #expect(normalized.contains("public struct Leaf: PrimitiveView"))
+        #expect(normalized.contains("public typealias Body = Swift.Never"))
+    }
+
+    @Test
     func protocolExtensionOpaquePropertyPreservesConstraint() async throws {
         let fixture = try integrationCompiler.compileFramework(
             moduleName: "ProtocolExtensionOpaqueFixture",
