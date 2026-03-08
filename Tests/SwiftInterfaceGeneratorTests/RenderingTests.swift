@@ -1040,6 +1040,23 @@ struct GenericInferenceTests {
     }
 
     @Test
+    func genericParameterInferenceIgnoresMethodScopedPlaceholderNames() {
+        let interface = renderingBuilder.makeInterface(
+            demangledSymbols: [
+                "nominal type descriptor for Mod.Gateway",
+                "Mod.Gateway.create<A1>(_: A1) -> Mod.Gateway<A1>",
+            ],
+            targetTriple: "arm64-apple-macosx15.0",
+            moduleName: "Mod",
+            compilerVersion: "Test"
+        )
+
+        let norm = normalizedInterface(interface)
+        #expect(norm.contains("public struct Gateway<T0>"))
+        #expect(!norm.contains("public struct Gateway<A1>"))
+    }
+
+    @Test
     func noGenericParametersForConcreteType() {
         let interface = renderingBuilder.makeInterface(
             demangledSymbols: [

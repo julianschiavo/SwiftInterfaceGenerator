@@ -1754,7 +1754,11 @@ struct SwiftInterfaceBuilder: Sendable {
 
         for fragment in fragments {
             for token in genericParameterTokens(in: fragment, moduleName: moduleName) {
-                if knownTypeComponents.contains(token) || excludedTokens.contains(token) {
+                if !isLikelyDeclarationTypeParameter(
+                    token,
+                    knownTypeComponents: knownTypeComponents,
+                    excludedTokens: excludedTokens
+                ) {
                     continue
                 }
                 if seenParameters.insert(token).inserted {
@@ -2108,6 +2112,26 @@ struct SwiftInterfaceBuilder: Sendable {
             return false
         }
         guard !Self.genericExcludedTokens.contains(token), !knownTypeComponents.contains(token) else {
+            return false
+        }
+        return token != "Self"
+    }
+
+    private func isLikelyDeclarationTypeParameter(
+        _ token: String,
+        knownTypeComponents: Set<String>,
+        excludedTokens: Set<String>
+    ) -> Bool {
+        guard token.first?.isUppercase == true else {
+            return false
+        }
+        guard token.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" }) else {
+            return false
+        }
+        guard !excludedTokens.contains(token), !knownTypeComponents.contains(token) else {
+            return false
+        }
+        if token.count > 1, token.dropFirst().allSatisfy(\.isNumber) {
             return false
         }
         return token != "Self"
@@ -2489,7 +2513,7 @@ struct SwiftInterfaceBuilder: Sendable {
         "Any", "AnyObject", "Bool", "Data", "Date", "Decoder", "Double",
         "Encoder", "Error", "Float", "Hasher", "IndexPath", "Int", "Int32",
         "Int64", "Never", "Self", "String", "Type", "UInt", "UInt32",
-        "UInt64", "URL", "UUID", "Void", "_", "async", "class", "func",
+        "UInt64", "URL", "UUID", "Void", "_", "autoclosure", "async", "class", "func",
         "init", "inout", "mutating", "nil", "some", "static", "throws", "where",
     ]
 
