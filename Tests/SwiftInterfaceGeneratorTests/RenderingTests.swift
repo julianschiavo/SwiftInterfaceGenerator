@@ -1502,6 +1502,27 @@ struct ComplexRenderingTests {
     }
 
     @Test
+    func extensionNestedNominalTypesAreDiscoveredForProtocolReferences() {
+        let interface = renderingBuilder.makeInterface(
+            demangledSymbols: [
+                "nominal type descriptor for Mod.Material",
+                "nominal type descriptor for (extension in Mod):Mod.Material.StatefulContext",
+                "protocol descriptor for Mod.StatefulMaterialProvider",
+                "associated type descriptor for Mod.StatefulMaterialProvider.State",
+                "method descriptor for Mod.StatefulMaterialProvider.updateState(_: inout A.State, in: inout (extension in Mod):Mod.Material.StatefulContext) -> ()",
+            ],
+            targetTriple: "arm64-apple-macosx15.0",
+            moduleName: "Mod",
+            compilerVersion: "Test"
+        )
+
+        let norm = normalizedInterface(interface)
+        #expect(norm.contains("public struct Material {"))
+        #expect(norm.contains("public struct StatefulContext {"))
+        #expect(norm.contains("func updateState(_: inout Self.State, `in`: inout Material.StatefulContext)"))
+    }
+
+    @Test
     func genericMethodOnGenericTypeDeclaresCorrectParams() {
         let interface = renderingBuilder.makeInterface(
             demangledSymbols: [

@@ -267,7 +267,7 @@ struct SwiftInterfaceBuilder: Sendable {
         let classMetadataPrefix = "class metadata base offset for \(moduleName)."
         let concreteTypeNames = Set(
             demangledSymbols.compactMap {
-                extractedTypeName(from: $0, prefix: nominalTypePrefix)
+                extractedTypeName(from: $0, prefix: nominalTypePrefix, moduleName: moduleName)
             }
         )
 
@@ -280,26 +280,42 @@ struct SwiftInterfaceBuilder: Sendable {
         }
 
         for (order, line) in demangledSymbols.enumerated() {
-            if let fullName = extractedTypeName(from: line, prefix: protocolDescriptorPrefix) {
+            if let fullName = extractedTypeName(
+                from: line,
+                prefix: protocolDescriptorPrefix,
+                moduleName: moduleName
+            ) {
                 var value = declaration(named: fullName, order: order)
                 value.isProtocol = true
                 setDeclaration(value)
                 continue
             }
 
-            if let fullName = extractedTypeName(from: line, prefix: nominalTypePrefix) {
+            if let fullName = extractedTypeName(
+                from: line,
+                prefix: nominalTypePrefix,
+                moduleName: moduleName
+            ) {
                 setDeclaration(declaration(named: fullName, order: order))
                 continue
             }
 
-            if let fullName = extractedTypeName(from: line, prefix: metaclassPrefix) {
+            if let fullName = extractedTypeName(
+                from: line,
+                prefix: metaclassPrefix,
+                moduleName: moduleName
+            ) {
                 var value = declaration(named: fullName, order: order)
                 value.isClass = true
                 setDeclaration(value)
                 continue
             }
 
-            if let fullName = extractedTypeName(from: line, prefix: classMetadataPrefix) {
+            if let fullName = extractedTypeName(
+                from: line,
+                prefix: classMetadataPrefix,
+                moduleName: moduleName
+            ) {
                 var value = declaration(named: fullName, order: order)
                 value.isClass = true
                 setDeclaration(value)
@@ -3437,11 +3453,19 @@ struct SwiftInterfaceBuilder: Sendable {
     ///   - line: The demangled symbol line.
     ///   - prefix: The prefix to strip (e.g. `"nominal type descriptor for Module."`).
     /// - Returns: The type name after the prefix, or `nil` if the line doesn't match.
-    private func extractedTypeName(from line: String, prefix: String) -> String? {
-        guard line.hasPrefix(prefix) else {
+    private func extractedTypeName(from line: String, prefix: String, moduleName: String) -> String? {
+        if line.hasPrefix(prefix) {
+            return String(line.dropFirst(prefix.count))
+        }
+
+        let extensionPrefix = prefix.replacing(
+            "\(moduleName).",
+            with: "(extension in \(moduleName)):\(moduleName)."
+        )
+        guard line.hasPrefix(extensionPrefix) else {
             return nil
         }
-        return String(line.dropFirst(prefix.count))
+        return String(line.dropFirst(extensionPrefix.count))
     }
 
     private func inferredModuleName(from line: String) -> String? {
