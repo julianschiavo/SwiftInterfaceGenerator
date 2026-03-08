@@ -1311,7 +1311,7 @@ struct SwiftInterfaceBuilder: Sendable {
         _ rawTypeName: String,
         moduleName: String = ""
     ) -> String {
-        var cleaned = rawTypeName
+        var cleaned = rawTypeName.replacing(/\(extension in [^)]+\):/, with: "")
         if !moduleName.isEmpty {
             cleaned = cleaned.replacingOccurrences(of: "\(moduleName).", with: "")
         }

@@ -907,6 +907,16 @@ struct CleanedTypeNameTests {
     }
 
     @Test
+    func stripsExtensionContextPrefix() {
+        #expect(
+            builder.cleanedTypeName(
+                "(extension in Sample):Sample.Material.Context",
+                moduleName: "Sample"
+            ) == "Material.Context"
+        )
+    }
+
+    @Test
     func combinedReplacements() {
         #expect(
             builder.cleanedTypeName("__owned Sample.Record", moduleName: "Sample") == "Record"
