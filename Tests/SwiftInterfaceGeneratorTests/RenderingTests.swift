@@ -1561,6 +1561,27 @@ struct ComplexRenderingTests {
     }
 
     @Test
+    func genericMethodPrefersReferencedPlaceholdersOverExplicitPlaceholder() {
+        let interface = renderingBuilder.makeInterface(
+            demangledSymbols: [
+                "nominal type descriptor for Mod.NamedImage",
+                "nominal type descriptor for Mod.NamedImage._BitmapInfo",
+                "property descriptor for Mod.NamedImage._BitmapInfo.contents : A",
+                "Mod.NamedImage._BitmapInfo.contents.getter : A",
+                "Mod.NamedImage._BitmapInfo.init<A>(_: Mod.NamedImage._BitmapInfo<A1>, contents: A) where A1 : Swift.Sendable",
+            ],
+            targetTriple: "arm64-apple-macosx15.0",
+            moduleName: "Mod",
+            compilerVersion: "Test"
+        )
+
+        let norm = normalizedInterface(interface)
+        #expect(norm.contains("public struct _BitmapInfo<A> {"))
+        #expect(norm.contains("public init<A1>(_: NamedImage._BitmapInfo<A1>, contents: A) where A1 : Swift.Sendable"))
+        #expect(!norm.contains("public init<A>(_: NamedImage._BitmapInfo<A1>, contents: A) where A1 : Swift.Sendable"))
+    }
+
+    @Test
     func genericWhereClausePreservesNestedClosingAngles() {
         let interface = renderingBuilder.makeInterface(
             demangledSymbols: [

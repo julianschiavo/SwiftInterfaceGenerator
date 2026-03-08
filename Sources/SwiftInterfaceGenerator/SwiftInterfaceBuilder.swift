@@ -1109,6 +1109,7 @@ struct SwiftInterfaceBuilder: Sendable {
                 knownTypeComponents: knownTypeComponents,
                 moduleName: moduleName,
                 ownerName: protocolOwnerName,
+                ownerGenericParameters: genericParameters,
                 ownerDeclaration: declaration,
                 declarations: declarations
             ) {
@@ -1126,6 +1127,7 @@ struct SwiftInterfaceBuilder: Sendable {
                 knownTypeComponents: knownTypeComponents,
                 moduleName: moduleName,
                 ownerName: protocolOwnerName,
+                ownerGenericParameters: genericParameters,
                 ownerDeclaration: declaration,
                 declarations: declarations
             ) {
@@ -1143,6 +1145,7 @@ struct SwiftInterfaceBuilder: Sendable {
                 knownTypeComponents: knownTypeComponents,
                 moduleName: moduleName,
                 ownerName: protocolOwnerName,
+                ownerGenericParameters: genericParameters,
                 ownerDeclaration: declaration,
                 declarations: declarations
             ) {
@@ -2016,6 +2019,7 @@ struct SwiftInterfaceBuilder: Sendable {
         knownTypeComponents: Set<String>,
         moduleName: String,
         ownerName: String? = nil,
+        ownerGenericParameters: [String] = [],
         ownerDeclaration: Declaration,
         declarations: [String: Declaration],
         forcePublicAccess: Bool = false
@@ -2119,6 +2123,7 @@ struct SwiftInterfaceBuilder: Sendable {
             genericWhereClause: genericParsed.whereClause,
             trailingWhereClause: trailingWhereClause,
             isProtocolRequirement: isProtocolRequirement,
+            ownerGenericParameters: ownerGenericParameters,
             knownTypeComponents: knownTypeComponents,
             moduleName: moduleName
         )
@@ -2155,40 +2160,31 @@ struct SwiftInterfaceBuilder: Sendable {
         genericWhereClause: String,
         trailingWhereClause: String,
         isProtocolRequirement: Bool,
+        ownerGenericParameters: [String],
         knownTypeComponents: Set<String>,
         moduleName: String
     ) -> [String] {
         let explicitParameters = parseGenericParameters(from: explicitGenericParamClause)
+        let ownerGenericSet = Set(ownerGenericParameters)
+        let explicitMethodParameters = explicitParameters.filter { !ownerGenericSet.contains($0) }
         let genericConstraintClauses = [genericWhereClause, trailingWhereClause]
             .filter { !$0.isEmpty }
-        var inferredParameters: [String] = []
-        var inferredParameterSet: Set<String> = []
+        var referencedMethodParameters: [String] = []
+        var referencedParameterSet: Set<String> = []
 
-        func appendInferred(_ token: String) {
-            guard
-                isLikelyMethodTypeParameter(token, knownTypeComponents: knownTypeComponents),
-                inferredParameterSet.insert(token).inserted
-            else {
-                return
-            }
-            inferredParameters.append(token)
-        }
-
-        for token in genericParameterTokens(in: arguments, moduleName: moduleName) {
-            appendInferred(token)
-        }
-        for token in genericParameterTokens(in: returnType, moduleName: moduleName) {
-            appendInferred(token)
-        }
-        for clause in genericConstraintClauses {
-            for token in genericRequirementTokens(in: clause) {
-                appendInferred(token)
+        for fragment in [arguments, returnType] + genericConstraintClauses {
+            for token in numberedGenericPlaceholderTokens(in: fragment)
+            where isLikelyMethodTypeParameter(token, knownTypeComponents: knownTypeComponents) {
+                guard referencedParameterSet.insert(token).inserted else {
+                    continue
+                }
+                referencedMethodParameters.append(token)
             }
         }
 
         if explicitParameters == ["Self"] {
-            if !inferredParameters.isEmpty {
-                return inferredParameters
+            if !referencedMethodParameters.isEmpty {
+                return referencedMethodParameters
             }
 
             // Protocol requirement descriptors can surface `Self` as the explicit method
@@ -2211,12 +2207,27 @@ struct SwiftInterfaceBuilder: Sendable {
         if isProtocolRequirement,
            !explicitParameters.isEmpty,
            explicitParameters.allSatisfy(isProtocolSelfPlaceholder),
-           !inferredParameters.isEmpty,
-           explicitParameters.allSatisfy({ !inferredParameterSet.contains($0) }) {
-            return inferredParameters
+           !referencedMethodParameters.isEmpty,
+           explicitParameters.allSatisfy({ !referencedParameterSet.contains($0) }) {
+            return referencedMethodParameters
         }
 
-        return explicitParameters
+        if explicitParameters.contains(where: ownerGenericSet.contains),
+           !referencedMethodParameters.isEmpty {
+            return referencedMethodParameters
+        }
+
+        if explicitMethodParameters.isEmpty {
+            return []
+        }
+
+        if !explicitMethodParameters.contains(where: isPackGenericParameter),
+           explicitMethodParameters.allSatisfy(isSingleLetterGenericPlaceholder),
+           referencedMethodParameters.contains(where: { !explicitMethodParameters.contains($0) }) {
+            return referencedMethodParameters
+        }
+
+        return explicitMethodParameters
     }
 
     private func parseGenericParameters(from clause: String) -> [String] {
@@ -2243,6 +2254,15 @@ struct SwiftInterfaceBuilder: Sendable {
 
     private func isProtocolSelfPlaceholder(_ token: String) -> Bool {
         token.count == 1 && token.first?.isUppercase == true
+    }
+
+    private func isSingleLetterGenericPlaceholder(_ token: String) -> Bool {
+        let trimmed = token.trimmingCharacters(in: .whitespaces)
+        return trimmed.count == 1 && trimmed.first?.isUppercase == true
+    }
+
+    private func isPackGenericParameter(_ token: String) -> Bool {
+        token.trimmingCharacters(in: .whitespaces).hasPrefix("each ")
     }
 
     private func isLikelyMethodTypeParameter(
