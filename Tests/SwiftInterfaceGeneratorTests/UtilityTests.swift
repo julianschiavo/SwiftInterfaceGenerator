@@ -197,3 +197,19 @@ func subprocessCommandRunnerLeavesOtherExecutablesUnchanged() async {
 
     #expect(resolvedExecutable == "nm")
 }
+
+@Test
+func subprocessCommandRunnerCapturesOutputLargerThanEightMegabytes() async throws {
+    let byteCount = 8_388_609
+    let result = try await SubprocessCommandRunner().run(
+        executable: "/usr/bin/python3",
+        arguments: [
+            "-c",
+            "import sys; sys.stdout.write('x' * \(byteCount))",
+        ],
+        stdin: nil
+    )
+
+    #expect(result.stdout.count == byteCount)
+    #expect(result.stderr.isEmpty)
+}

@@ -34,7 +34,7 @@ protocol CommandRunning: Sendable {
 /// A command runner backed by the `Subprocess` library.
 ///
 /// This is the default runner used by ``SwiftInterfaceGenerator`` in production.
-/// It launches processes using `Subprocess.run`, captures up to 8 MB of stdout/stderr,
+/// It launches processes using `Subprocess.run`, captures full stdout/stderr,
 /// and throws ``SwiftInterfaceGeneratorError/commandFailed(command:status:stdout:stderr:)``
 /// on non-zero exit.
 struct SubprocessCommandRunner: CommandRunning {
@@ -134,15 +134,15 @@ struct SubprocessCommandRunner: CommandRunning {
                 .name(executable),
                 arguments: Arguments(arguments),
                 input: .string(stdin),
-                output: .string(limit: 8_388_608),
-                error: .string(limit: 8_388_608)
+                output: .string(limit: .max),
+                error: .string(limit: .max)
             )
         } else {
             result = try await Subprocess.run(
                 .name(executable),
                 arguments: Arguments(arguments),
-                output: .string(limit: 8_388_608),
-                error: .string(limit: 8_388_608)
+                output: .string(limit: .max),
+                error: .string(limit: .max)
             )
         }
         return result
