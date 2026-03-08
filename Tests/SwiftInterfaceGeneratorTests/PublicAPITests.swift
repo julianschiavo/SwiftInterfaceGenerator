@@ -263,3 +263,66 @@ func generateInfersModuleNameFromDemangledSymbolsWhenBinaryNameDiffers() async t
             )
     )
 }
+
+@Test
+func generateUsesDiscoveredExternalModulesWithoutCompilerProbing() async throws {
+    let temporaryDirectory = try TemporaryDirectory(prefix: "SwiftInterfaceGeneratorImports")
+    let frameworkURL = temporaryDirectory.url
+        .appendingPathComponent("Fixture.framework", isDirectory: true)
+        .appendingPathComponent("Fixture")
+    let rawSymbols = "raw nm output"
+    let demangledSymbols = [
+        "nominal type descriptor for Fixture.Manager",
+        "property descriptor for Fixture.Manager.createdAt : Foundation.Date",
+    ].joined(separator: "\n")
+    let commandRunner = MockCommandRunner(
+        responses: [
+            .success(CommandResult(stdout: rawSymbols, stderr: "")),
+            .success(CommandResult(stdout: demangledSymbols, stderr: "")),
+            .success(CommandResult(stdout: "", stderr: "")),
+        ]
+    )
+    let generator = SwiftInterfaceGenerator(
+        commandRunner: commandRunner,
+        compilerVersionProvider: { "Test Swift" }
+    )
+
+    let generatedInterface = try await generator.generate(
+        frameworkBinaryURL: frameworkURL,
+        repositoryRootURL: temporaryDirectory.url,
+        targetTriple: "arm64-apple-macosx15.0"
+    )
+    let interfaceContents = try String(contentsOf: generatedInterface.interfaceURL, encoding: .utf8)
+
+    #expect(
+        normalizedInterface(interfaceContents)
+            == normalizedInterface(
+                """
+            // swift-interface-format-version: 1.0
+            // swift-compiler-version: Test Swift
+            // swift-module-flags: -target arm64-apple-macosx15.0 -enable-library-evolution -module-name Fixture
+            import Swift
+            import Foundation
+
+            public struct Manager {
+              public var createdAt: Foundation.Date { get }
+            }
+            """
+            )
+    )
+    #expect(
+        await commandRunner.recordedInvocations()
+            == [
+                .init(
+                    executable: "nm",
+                    arguments: ["-gU", frameworkURL.standardizedFileURL.path],
+                    stdin: nil
+                ),
+                .init(
+                    executable: "swift-demangle",
+                    arguments: ["--compact"],
+                    stdin: rawSymbols
+                ),
+            ]
+    )
+}
