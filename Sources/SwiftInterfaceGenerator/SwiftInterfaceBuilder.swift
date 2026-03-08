@@ -1838,9 +1838,12 @@ struct SwiftInterfaceBuilder: Sendable {
         guard let firstCharacter = parts[0].first, firstCharacter.isUppercase else {
             return nil
         }
-
         let replacement = parts[0]
-        guard replacement != "Self" && !replacement.hasPrefix("Self.") else {
+        let leading = replacement.split(separator: ".").first ?? ""
+        if leading == "Self" {
+            return "<\(replacement)>"
+        }
+        guard leading.first?.isUppercase == true else {
             return nil
         }
 
