@@ -877,6 +877,7 @@ struct SwiftInterfaceBuilder: Sendable {
                 allowedPrefixes: allowedPrefixes,
                 level: level + 1,
                 isProtocolRequirement: isProtocol,
+                knownTypeComponents: knownTypeComponents,
                 moduleName: moduleName,
                 ownerName: protocolOwnerName,
                 ownerDeclaration: declaration,
@@ -893,6 +894,7 @@ struct SwiftInterfaceBuilder: Sendable {
                 allowedPrefixes: allowedPrefixes,
                 level: level + 1,
                 isProtocolRequirement: isProtocol,
+                knownTypeComponents: knownTypeComponents,
                 moduleName: moduleName,
                 ownerName: protocolOwnerName,
                 ownerDeclaration: declaration,
@@ -909,6 +911,7 @@ struct SwiftInterfaceBuilder: Sendable {
                 allowedPrefixes: allowedPrefixes,
                 level: level + 1,
                 isProtocolRequirement: isProtocol,
+                knownTypeComponents: knownTypeComponents,
                 moduleName: moduleName,
                 ownerName: protocolOwnerName,
                 ownerDeclaration: declaration,
@@ -1199,6 +1202,7 @@ struct SwiftInterfaceBuilder: Sendable {
         allowedPrefixes: Set<String>?,
         level: Int,
         isProtocolRequirement: Bool,
+        knownTypeComponents: Set<String>,
         moduleName: String,
         ownerName: String? = nil,
         ownerDeclaration: Declaration,
@@ -1296,7 +1300,16 @@ struct SwiftInterfaceBuilder: Sendable {
         let head = String(rawSignature[..<openingParenthesis])
         let genericParsed = parseGenericClause(head, moduleName: moduleName)
         let methodName = genericParsed.name
-        let genericParamClause = genericParsed.paramClause
+        let genericParameters = resolvedMethodGenericParameters(
+            explicitGenericParamClause: genericParsed.paramClause,
+            arguments: arguments,
+            returnType: returnType,
+            genericWhereClause: genericParsed.whereClause,
+            trailingWhereClause: trailingWhereClause,
+            knownTypeComponents: knownTypeComponents,
+            moduleName: moduleName
+        )
+        let genericParamClause = genericParameters.isEmpty ? "" : "<\(genericParameters.joined(separator: ", "))>"
         let whereClause = combinedWhereClause(
             genericParsed.whereClause,
             trailingWhereClause
@@ -1320,6 +1333,80 @@ struct SwiftInterfaceBuilder: Sendable {
         }
 
         return result
+    }
+
+    private func resolvedMethodGenericParameters(
+        explicitGenericParamClause: String,
+        arguments: String,
+        returnType: String,
+        genericWhereClause: String,
+        trailingWhereClause: String,
+        knownTypeComponents: Set<String>,
+        moduleName: String
+    ) -> [String] {
+        let explicitParameters = parseGenericParameters(from: explicitGenericParamClause)
+        guard explicitParameters == ["Self"] else {
+            return explicitParameters
+        }
+
+        let genericConstraintClauses = [genericWhereClause, trailingWhereClause]
+            .filter { !$0.isEmpty }
+        var inferredParameters: [String] = []
+
+        for clause in genericConstraintClauses {
+            for token in genericRequirementTokens(in: clause) where isLikelyMethodTypeParameter(
+                token,
+                knownTypeComponents: knownTypeComponents
+            ) {
+                inferredParameters.append(token)
+            }
+        }
+
+        for token in genericParameterTokens(in: arguments, moduleName: moduleName)
+            .filter({ isLikelyMethodTypeParameter($0, knownTypeComponents: knownTypeComponents) }) {
+            inferredParameters.append(token)
+        }
+        for token in genericParameterTokens(in: returnType, moduleName: moduleName)
+            .filter({ isLikelyMethodTypeParameter($0, knownTypeComponents: knownTypeComponents) }) {
+            inferredParameters.append(token)
+        }
+
+        for parameter in inferredParameters {
+            if parameter != "Self" && !knownTypeComponents.contains(parameter) {
+                return [parameter]
+            }
+        }
+        return []
+    }
+
+    private func parseGenericParameters(from clause: String) -> [String] {
+        let trimmed = clause.trimmingCharacters(in: .whitespaces)
+        guard trimmed.hasPrefix("<"), trimmed.hasSuffix(">") else {
+            return []
+        }
+        return String(trimmed.dropFirst().dropLast())
+            .split(separator: ",")
+            .map { String($0).trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
+
+    private func isLikelyMethodTypeParameter(
+        _ token: String,
+        knownTypeComponents: Set<String>
+    ) -> Bool {
+        guard token.count > 1 || token.first == "A" else {
+            return false
+        }
+        guard token.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" }) else {
+            return false
+        }
+        guard token.first?.isUppercase == true else {
+            return false
+        }
+        guard !Self.genericExcludedTokens.contains(token), !knownTypeComponents.contains(token) else {
+            return false
+        }
+        return token != "Self"
     }
 
     private func resolvedOpaquePropertyType(

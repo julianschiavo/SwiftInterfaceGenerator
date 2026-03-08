@@ -1362,6 +1362,22 @@ struct ComplexRenderingTests {
     }
 
     @Test
+    func methodGenericPlaceholderSelfUsesInferredTypeParameter() {
+        let interface = renderingBuilder.makeInterface(
+            demangledSymbols: [
+                "nominal type descriptor for Mod.Layout",
+                "Mod.Layout.firstIndex<Self>(of: A1, subviews: Mod.Subviews, context: Mod.Context) -> Swift.Int? where A1 : Swift.Hashable",
+            ],
+            targetTriple: "arm64-apple-macosx15.0",
+            moduleName: "Mod",
+            compilerVersion: "Test"
+        )
+
+        let norm = normalizedInterface(interface)
+        #expect(norm.contains("public func firstIndex<A1>(of: A1, subviews: Subviews, context: Context) -> Swift.Int? where A1 : Swift.Hashable"))
+    }
+
+    @Test
     func genericMethodDoesNotCreateSpuriousDeclarations() {
         let interface = renderingBuilder.makeInterface(
             demangledSymbols: [
