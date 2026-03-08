@@ -764,8 +764,14 @@ struct SwiftInterfaceBuilder: Sendable {
             else {
                 continue
             }
+            let rawType = resolvedOpaquePropertyType(
+                property,
+                in: declaration,
+                declarations: declarations,
+                moduleName: moduleName
+            ) ?? property.rawType
             let renderedType = renderedTypeName(
-                property.rawType,
+                rawType,
                 protocolNames: protocolNames,
                 moduleName: moduleName
             )
@@ -814,7 +820,9 @@ struct SwiftInterfaceBuilder: Sendable {
                 level: level + 1,
                 isProtocolRequirement: isProtocol,
                 moduleName: moduleName,
-                ownerName: protocolOwnerName
+                ownerName: protocolOwnerName,
+                ownerDeclaration: declaration,
+                declarations: declarations
             ) {
                 body.append(rendered)
             }
@@ -828,7 +836,9 @@ struct SwiftInterfaceBuilder: Sendable {
                 level: level + 1,
                 isProtocolRequirement: isProtocol,
                 moduleName: moduleName,
-                ownerName: protocolOwnerName
+                ownerName: protocolOwnerName,
+                ownerDeclaration: declaration,
+                declarations: declarations
             ) {
                 body.append(rendered)
             }
@@ -842,7 +852,9 @@ struct SwiftInterfaceBuilder: Sendable {
                 level: level + 1,
                 isProtocolRequirement: isProtocol,
                 moduleName: moduleName,
-                ownerName: protocolOwnerName
+                ownerName: protocolOwnerName,
+                ownerDeclaration: declaration,
+                declarations: declarations
             ) {
                 body.append(rendered)
             }
@@ -1112,7 +1124,9 @@ struct SwiftInterfaceBuilder: Sendable {
         level: Int,
         isProtocolRequirement: Bool,
         moduleName: String,
-        ownerName: String? = nil
+        ownerName: String? = nil,
+        ownerDeclaration: Declaration,
+        declarations: [String: Declaration]
     ) -> String? {
         let indent = String(repeating: "  ", count: level)
         let rawSignature = callable.rawSignature
@@ -1188,8 +1202,15 @@ struct SwiftInterfaceBuilder: Sendable {
             moduleName: moduleName
         )) ?? arguments
         let renderedEffects = effects.isEmpty ? "" : " \(effects)"
+        let resolvedReturnType = resolvedOpaqueCallableReturnType(
+            callable,
+            rawReturnType: returnType,
+            in: ownerDeclaration,
+            declarations: declarations,
+            moduleName: moduleName
+        ) ?? returnType
         let renderedReturnType = renderedTypeName(
-            returnType,
+            resolvedReturnType,
             protocolNames: protocolNames,
             moduleName: moduleName
         )
@@ -1223,6 +1244,229 @@ struct SwiftInterfaceBuilder: Sendable {
         }
 
         return result
+    }
+
+    private func resolvedOpaquePropertyType(
+        _ property: Declaration.Property,
+        in declaration: Declaration,
+        declarations: [String: Declaration],
+        moduleName: String
+    ) -> String? {
+        guard cleanedTypeName(property.rawType, moduleName: moduleName) == "some" else {
+            return nil
+        }
+
+        for protocolDeclaration in protocolDeclarations(
+            conformedToBy: declaration,
+            declarations: declarations,
+            moduleName: moduleName
+        ) {
+            guard let requirement = protocolDeclaration.properties.first(where: {
+                $0.name == property.name && $0.isStatic == property.isStatic
+            }),
+            let opaqueType = opaqueType(
+                fromRequirementReturnType: requirement.rawType,
+                in: protocolDeclaration,
+                moduleName: moduleName
+            ) else {
+                continue
+            }
+
+            return opaqueType
+        }
+
+        return nil
+    }
+
+    private func resolvedOpaqueCallableReturnType(
+        _ callable: Declaration.Callable,
+        rawReturnType: String,
+        in declaration: Declaration,
+        declarations: [String: Declaration],
+        moduleName: String
+    ) -> String? {
+        guard !callable.isInitializer,
+              cleanedTypeName(rawReturnType, moduleName: moduleName) == "some",
+              let requirementKey = callableRequirementKey(
+                  for: callable.rawSignature,
+                  isStatic: callable.isStatic,
+                  moduleName: moduleName
+              ) else {
+            return nil
+        }
+
+        for protocolDeclaration in protocolDeclarations(
+            conformedToBy: declaration,
+            declarations: declarations,
+            moduleName: moduleName
+        ) {
+            let requirements = callable.isStatic
+                ? protocolDeclaration.staticMethods
+                : protocolDeclaration.methods
+
+            for requirement in requirements {
+                guard callableRequirementKey(
+                    for: requirement.rawSignature,
+                    isStatic: callable.isStatic,
+                    moduleName: moduleName
+                ) == requirementKey,
+                let requirementReturnType = parsedCallableSignatureComponents(
+                    from: requirement.rawSignature
+                )?.returnType,
+                let opaqueType = opaqueType(
+                    fromRequirementReturnType: requirementReturnType,
+                    in: protocolDeclaration,
+                    moduleName: moduleName
+                ) else {
+                    continue
+                }
+
+                return opaqueType
+            }
+        }
+
+        return nil
+    }
+
+    private func protocolDeclarations(
+        conformedToBy declaration: Declaration,
+        declarations: [String: Declaration],
+        moduleName: String
+    ) -> [Declaration] {
+        var result: [Declaration] = []
+        var visited: Set<String> = []
+
+        func visit(_ rawConformance: String) {
+            let cleanedConformance = cleanedTypeName(rawConformance, moduleName: moduleName)
+            guard let protocolDeclaration = declarations.values.first(where: {
+                $0.resolvedKind == .protocol
+                    && (
+                        cleanedTypeName($0.fullName, moduleName: moduleName) == cleanedConformance
+                            || simpleName(of: $0.fullName) == cleanedConformance
+                    )
+            }),
+            visited.insert(protocolDeclaration.fullName).inserted else {
+                return
+            }
+
+            result.append(protocolDeclaration)
+            for inheritedConformance in protocolDeclaration.conformances {
+                visit(inheritedConformance)
+            }
+        }
+
+        for conformance in declaration.conformances {
+            visit(conformance)
+        }
+
+        return result
+    }
+
+    private func opaqueType(
+        fromRequirementReturnType rawReturnType: String,
+        in protocolDeclaration: Declaration,
+        moduleName: String
+    ) -> String? {
+        let associatedTypeNames = Set(protocolDeclaration.associatedTypes.map(\.name))
+        let cleanedReturnType = cleanedTypeName(rawReturnType, moduleName: moduleName)
+
+        let associatedTypeName: String
+        if associatedTypeNames.contains(cleanedReturnType) {
+            associatedTypeName = cleanedReturnType
+        } else if let separator = cleanedReturnType.lastIndex(of: ".") {
+            let candidate = String(cleanedReturnType[cleanedReturnType.index(after: separator)...])
+            guard associatedTypeNames.contains(candidate) else {
+                return nil
+            }
+            associatedTypeName = candidate
+        } else {
+            return nil
+        }
+
+        guard let associatedType = protocolDeclaration.associatedTypes.first(where: {
+            $0.name == associatedTypeName
+        }) else {
+            return nil
+        }
+
+        let conformances = normalizedConformances(associatedType.conformances)
+        guard !conformances.isEmpty else {
+            return nil
+        }
+
+        return "some " + conformances
+            .map { cleanedTypeName($0, moduleName: moduleName) }
+            .joined(separator: " & ")
+    }
+
+    private func callableRequirementKey(
+        for rawSignature: String,
+        isStatic: Bool,
+        moduleName: String
+    ) -> String? {
+        guard let components = parsedCallableSignatureComponents(from: rawSignature) else {
+            return nil
+        }
+
+        let cleanedArguments = cleanedTypeName(components.arguments, moduleName: moduleName)
+        let labels = parsedTupleType(fromArgumentList: cleanedArguments)?.elements.map {
+            $0.firstName?.text ?? "_"
+        } ?? [cleanedArguments]
+
+        return "\(isStatic ? "static" : "instance")|\(components.name)|\(labels.joined(separator: ","))"
+    }
+
+    private func parsedCallableSignatureComponents(
+        from rawSignature: String
+    ) -> (name: String, arguments: String, returnType: String)? {
+        let openingParenthesis: String.Index
+        if let angleBracket = rawSignature.firstIndex(of: "<"),
+           let firstParen = rawSignature.firstIndex(of: "("),
+           angleBracket < firstParen,
+           let closingAngle = matchingClosingDelimiter(
+               in: rawSignature,
+               from: angleBracket,
+               open: "<",
+               close: ">"
+           ) {
+            guard let parenthesis = rawSignature[rawSignature.index(after: closingAngle)...].firstIndex(of: "(") else {
+                return nil
+            }
+            openingParenthesis = parenthesis
+        } else {
+            guard let parenthesis = rawSignature.firstIndex(of: "(") else {
+                return nil
+            }
+            openingParenthesis = parenthesis
+        }
+
+        guard let closingParenthesis = matchingClosingParenthesis(
+            in: rawSignature,
+            from: openingParenthesis
+        ) else {
+            return nil
+        }
+
+        let head = String(rawSignature[..<openingParenthesis])
+        let arguments = String(
+            rawSignature[rawSignature.index(after: openingParenthesis)..<closingParenthesis]
+        )
+        let trailingSignature = String(rawSignature[rawSignature.index(after: closingParenthesis)...])
+        let returnType: String
+
+        if let returnArrow = topLevelArrowRange(in: trailingSignature) {
+            let rawReturnSection = String(trailingSignature[returnArrow.upperBound...])
+                .trimmingCharacters(in: .whitespaces)
+            returnType = splitTrailingWhereClause(from: rawReturnSection).returnType
+        } else {
+            returnType = "()"
+        }
+
+        return (
+            name: parseGenericClause(head, moduleName: "").name,
+            arguments: arguments,
+            returnType: returnType
+        )
     }
 
     /// Renders a raw argument list string into cleaned Swift parameter syntax.

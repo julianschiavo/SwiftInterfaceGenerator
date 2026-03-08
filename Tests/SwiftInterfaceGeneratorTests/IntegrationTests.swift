@@ -1195,6 +1195,42 @@ struct IntegrationTests {
         )
     }
 
+    @Test
+    func opaqueReturnTypesPreserveProtocolConstraints() async throws {
+        let fixture = try integrationCompiler.compileFramework(
+            moduleName: "OpaqueFixture",
+            sources: [
+                "OpaqueFixture.swift": """
+                public protocol Marker {}
+
+                public protocol Maker {
+                    associatedtype Output: Marker
+                    func make() -> Output
+                }
+
+                public struct Token: Marker {
+                    public init() {}
+                }
+
+                public struct Factory: Maker {
+                    public init() {}
+
+                    public func make() -> some Marker {
+                        Token()
+                    }
+                }
+                """
+            ]
+        )
+        let contents = try await generateInterface(fixture: fixture)
+
+        let normalized = normalizedInterface(contents)
+        #expect(normalized.contains("public protocol Maker {"))
+        #expect(normalized.contains("associatedtype Output"))
+        #expect(normalized.contains("func make() -> some Marker"))
+        #expect(normalized.contains("public struct Factory: Maker {"))
+    }
+
     // MARK: - Multiple Source Files
 
     @Test
