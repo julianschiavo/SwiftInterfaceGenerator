@@ -1453,6 +1453,30 @@ struct ComplexRenderingTests {
     }
 
     @Test
+    func genericEnumCaseConstructorsRenderAsEnumCases() {
+        let interface = renderingBuilder.makeInterface(
+            demangledSymbols: [
+                "nominal type descriptor for Mod.GesturePhase",
+                "enum case for Mod.GesturePhase.ended<A>(Mod.GesturePhase<A>.Type) -> (A) -> Mod.GesturePhase<A>",
+                "enum case for Mod.GesturePhase.active<A>(Mod.GesturePhase<A>.Type) -> (A) -> Mod.GesturePhase<A>",
+                "enum case for Mod.GesturePhase.failed<A>(Mod.GesturePhase<A>.Type) -> Mod.GesturePhase<A>",
+                "enum case for Mod.GesturePhase.possible<A>(Mod.GesturePhase<A>.Type) -> (A?) -> Mod.GesturePhase<A>",
+            ],
+            targetTriple: "arm64-apple-macosx15.0",
+            moduleName: "Mod",
+            compilerVersion: "Test"
+        )
+
+        let norm = normalizedInterface(interface)
+        #expect(norm.contains("public enum GesturePhase<A> {"))
+        #expect(norm.contains("case ended(A)"))
+        #expect(norm.contains("case active(A)"))
+        #expect(norm.contains("case failed"))
+        #expect(norm.contains("case possible(A?)"))
+        #expect(!norm.contains("case ended<A>"))
+    }
+
+    @Test
     func sameModuleConstrainedExtensionMethodsRenderOnConcreteType() {
         let interface = renderingBuilder.makeInterface(
             demangledSymbols: [

@@ -56,6 +56,7 @@ struct SwiftInterfaceBuilder: Sendable {
         struct EnumCase: Sendable, Hashable {
             let name: String
             let rawPayload: String?
+            let rawOwnerType: String?
             let order: Int
         }
 
@@ -171,7 +172,8 @@ struct SwiftInterfaceBuilder: Sendable {
             methods.map(\.rawSignature) +
             staticMethods.map(\.rawSignature) +
             properties.map(\.rawType) +
-            enumCases.compactMap(\.rawPayload)
+            enumCases.compactMap(\.rawPayload) +
+            enumCases.compactMap(\.rawOwnerType)
         }
 
         /// Protocol takes priority, then enum (if cases exist), then class, defaulting to struct.
@@ -382,6 +384,7 @@ struct SwiftInterfaceBuilder: Sendable {
                     Declaration.EnumCase(
                         name: enumCase.name,
                         rawPayload: enumCase.rawPayload,
+                        rawOwnerType: enumCase.rawOwnerType,
                         order: order
                     )
                 )
@@ -1846,11 +1849,11 @@ struct SwiftInterfaceBuilder: Sendable {
     /// - Parameters:
     ///   - line: The demangled symbol line to parse.
     ///   - moduleName: The module name prefix to match.
-    /// - Returns: A tuple of `(owner, name, rawPayload)`, or `nil` if the line doesn't match.
+    /// - Returns: A tuple of `(owner, name, rawPayload, rawOwnerType)`, or `nil` if the line doesn't match.
     func parseEnumCase(
         from line: String,
         moduleName: String
-    ) -> (owner: String, name: String, rawPayload: String?)? {
+    ) -> (owner: String, name: String, rawPayload: String?, rawOwnerType: String?)? {
         let prefix = "enum case for \(moduleName)."
         guard line.hasPrefix(prefix) else {
             return nil
@@ -1873,26 +1876,32 @@ struct SwiftInterfaceBuilder: Sendable {
         }
 
         let owner = String(casePath[..<caseNameSeparator])
-        let name = String(casePath[casePath.index(after: caseNameSeparator)...])
+        let name = removingGenericArguments(
+            from: String(casePath[casePath.index(after: caseNameSeparator)...])
+        )
         let tail = String(remainder[caseSignatureSeparator.upperBound...])
             .replacingOccurrences(of: "\(moduleName).", with: "")
+        let rawOwnerType: String
+        let rawPayload: String?
 
-        if tail == owner {
-            return (owner, name, nil)
+        if let payloadArrow = topLevelArrowRange(in: tail) {
+            rawOwnerType = String(tail[payloadArrow.upperBound...]).trimmingCharacters(in: .whitespaces)
+            var payload = String(tail[..<payloadArrow.lowerBound]).trimmingCharacters(in: .whitespaces)
+            if payload.first == "(", payload.last == ")" {
+                payload.removeFirst()
+                payload.removeLast()
+            }
+            rawPayload = payload
+        } else {
+            rawOwnerType = tail.trimmingCharacters(in: .whitespaces)
+            rawPayload = nil
         }
 
-        let ownerSuffix = " -> \(owner)"
-        guard tail.hasSuffix(ownerSuffix) else {
-            return (owner, name, nil)
+        guard removingGenericArguments(from: rawOwnerType) == owner else {
+            return (owner, name, nil, nil)
         }
 
-        var payload = String(tail.dropLast(ownerSuffix.count))
-        if payload.first == "(", payload.last == ")" {
-            payload.removeFirst()
-            payload.removeLast()
-        }
-
-        return (owner, name, payload)
+        return (owner, name, rawPayload, rawOwnerType)
     }
 
     /// Parses a protocol method descriptor symbol line.
