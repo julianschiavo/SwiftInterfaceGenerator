@@ -294,6 +294,38 @@ struct MakeInterfaceTests {
     }
 
     @Test
+    func declarationGenericConstraintsPreferDirectConformancesWhenAssociatedTypesAreAmbiguous() {
+        let interface = renderingBuilder.makeInterface(
+            demangledSymbols: [
+                "protocol descriptor for Mod.Location",
+                "associated type descriptor for Mod.Location.Value",
+                "method descriptor for Mod.Location.get() -> Mod.Location.Value",
+                "method descriptor for Mod.Location.set(_: Mod.Location.Value, transaction: Mod.Transaction) -> ()",
+                "protocol descriptor for Mod.Gesture",
+                "associated type descriptor for Mod.Gesture.Value",
+                "nominal type descriptor for Mod.Transaction",
+                "nominal type descriptor for Mod.LocationBox",
+                "metaclass for Mod.LocationBox",
+                "protocol conformance descriptor for Mod.LocationBox : Mod.Location in Mod",
+                "property descriptor for Mod.LocationBox.location : A",
+                "Mod.LocationBox.location.getter : A",
+                "Mod.LocationBox.init(_: A) -> Mod.LocationBox<A>",
+                "Mod.LocationBox.get() -> A.Value",
+                "Mod.LocationBox.set(_: A.Value, transaction: Mod.Transaction) -> ()",
+            ],
+            targetTriple: "arm64-apple-macosx15.0",
+            moduleName: "Mod",
+            compilerVersion: "Test"
+        )
+
+        #expect(
+            normalizedInterface(interface).contains(
+                "public final class LocationBox<A>: Location where A : Location {"
+            )
+        )
+    }
+
+    @Test
     func enumWithMixedCases() {
         let interface = renderingBuilder.makeInterface(
             demangledSymbols: [

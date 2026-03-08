@@ -1866,7 +1866,9 @@ struct SwiftInterfaceBuilder: Sendable {
             guard let members = associatedTypeReferences[parameter], !members.isEmpty,
                   let protocolDeclaration = protocolDeclaringAssociatedTypes(
                     members,
-                    declarations: declarations
+                    declarations: declarations,
+                    preferredConformances: declaration.conformances,
+                    moduleName: moduleName
                   ) else {
                 return nil
             }
@@ -1911,7 +1913,9 @@ struct SwiftInterfaceBuilder: Sendable {
 
     private func protocolDeclaringAssociatedTypes(
         _ associatedTypeNames: Set<String>,
-        declarations: [String: Declaration]
+        declarations: [String: Declaration],
+        preferredConformances: [String],
+        moduleName: String
     ) -> Declaration? {
         guard !associatedTypeNames.isEmpty else {
             return nil
@@ -1927,17 +1931,40 @@ struct SwiftInterfaceBuilder: Sendable {
 
                 return (declaration, providedNames.count - associatedTypeNames.count)
             }
-            .sorted {
-                if $0.extraCount != $1.extraCount {
-                    return $0.extraCount < $1.extraCount
-                }
-                return $0.declaration.fullName < $1.declaration.fullName
+        let preferredConformanceNames = Set(
+            preferredConformances.flatMap { conformance in
+                let cleanedConformance = cleanedTypeName(conformance, moduleName: moduleName)
+                return [cleanedConformance, simpleName(of: cleanedConformance)]
             }
+        )
 
-        guard let bestMatch = candidates.first else {
+        let preferredCandidates = candidates.filter { candidate in
+            let cleanedProtocolName = cleanedTypeName(candidate.declaration.fullName, moduleName: moduleName)
+            return preferredConformanceNames.contains(cleanedProtocolName)
+                || preferredConformanceNames.contains(simpleName(of: cleanedProtocolName))
+        }
+
+        if let preferredMatch = bestProtocolMatch(from: preferredCandidates) {
+            return preferredMatch
+        }
+
+        return bestProtocolMatch(from: candidates)
+    }
+
+    private func bestProtocolMatch(
+        from candidates: [(declaration: Declaration, extraCount: Int)]
+    ) -> Declaration? {
+        let sortedCandidates = candidates.sorted {
+            if $0.extraCount != $1.extraCount {
+                return $0.extraCount < $1.extraCount
+            }
+            return $0.declaration.fullName < $1.declaration.fullName
+        }
+
+        guard let bestMatch = sortedCandidates.first else {
             return nil
         }
-        if let nextBest = candidates.dropFirst().first,
+        if let nextBest = sortedCandidates.dropFirst().first,
            nextBest.extraCount == bestMatch.extraCount {
             return nil
         }
