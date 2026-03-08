@@ -878,6 +878,27 @@ struct ImportDiscoveryTests {
         )
         #expect(normalizedInterface(interface).contains("import Foundation"))
     }
+
+    @Test
+    func genericPlaceholdersAndBuiltinsDoNotBecomeImports() {
+        let interface = renderingBuilder.makeInterface(
+            demangledSymbols: [
+                "protocol descriptor for Mod.PreferenceKey",
+                "associated type descriptor for Mod.PreferenceKey.Value",
+                "nominal type descriptor for Mod.Container",
+                "Mod.Container.typeErased(_: Any.Type) -> Swift.Int",
+                "Mod.Container.preferenceValue<A>(_: A1.Type) -> A1.Value where A1 : Mod.PreferenceKey",
+            ],
+            targetTriple: "arm64-apple-macosx15.0",
+            moduleName: "Mod",
+            compilerVersion: "Test"
+        )
+
+        let norm = normalizedInterface(interface)
+        #expect(norm.contains("import Swift"))
+        #expect(!norm.contains("import Any"))
+        #expect(!norm.contains("import A1"))
+    }
 }
 
 // MARK: - Generic Type Inference

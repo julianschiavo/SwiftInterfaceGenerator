@@ -2580,7 +2580,16 @@ struct SwiftInterfaceBuilder: Sendable {
             string.matches(of: #/\b([A-Z_][A-Za-z0-9_]{1,}|os)\./#).map {
                 String($0.1)
             }
+            .filter(isModuleImportCandidate)
         )
+    }
+
+    private func isModuleImportCandidate(_ prefix: String) -> Bool {
+        guard !Self.genericExcludedTokens.contains(prefix) else {
+            return false
+        }
+
+        return prefix.wholeMatch(of: #/^[A-Z][0-9]*$/#) == nil
     }
 
     private func replacingLiteralOccurrences(
