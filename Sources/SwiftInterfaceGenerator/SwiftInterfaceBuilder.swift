@@ -1590,7 +1590,10 @@ struct SwiftInterfaceBuilder: Sendable {
             return nil
         }
 
-        return (["extension \(ownerName)\(whereClause) {"] + body + ["}"]).joined(separator: "\n")
+        let renderedWhereClause = whereClause.replacingSelfTypePattern()
+        return (["extension \(ownerName)\(renderedWhereClause) {"] + body + ["}"]).joined(
+            separator: "\n"
+        )
     }
 
     private func renderedQualifiedDeclarationName(_ fullName: String, moduleName: String) -> String {

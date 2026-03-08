@@ -1814,6 +1814,49 @@ struct IntegrationTests {
     }
 
     @Test
+    func protocolExtensionWhereClauseReplacesSelfPlaceholder() async throws {
+        let fixture = try integrationCompiler.compileFramework(
+            moduleName: "ProtocolExtensionWhereClauseFixture",
+            sources: [
+                "ProtocolExtensionWhereClauseFixture.swift": """
+                public protocol ArithmeticValue {}
+
+                public struct EmptyScaleData: ArithmeticValue {
+                    public init() {}
+                }
+
+                public protocol Scalable {
+                    associatedtype ScaleData: ArithmeticValue
+                    var scaleData: ScaleData { get set }
+                }
+
+                public extension Scalable where Self: ArithmeticValue {
+                    var scaleData: Self {
+                        get { self }
+                        set {}
+                    }
+                }
+
+                public extension Scalable where Self.ScaleData == EmptyScaleData {
+                    var scaleData: EmptyScaleData {
+                        get { EmptyScaleData() }
+                        set {}
+                    }
+                }
+                """
+            ]
+        )
+        let contents = try await generateInterface(fixture: fixture)
+        let normalized = normalizedInterface(contents)
+
+        #expect(normalized.contains("extension Scalable where Self : ArithmeticValue {"))
+        #expect(normalized.contains("public var scaleData: Self { get set }"))
+        #expect(normalized.contains("extension Scalable where Self.ScaleData == EmptyScaleData {"))
+        #expect(!normalized.contains("extension Scalable where A : ArithmeticValue"))
+        #expect(!normalized.contains("extension Scalable where A.ScaleData == EmptyScaleData"))
+    }
+
+    @Test
     func opaqueSubscriptWitnessPreservesConstraint() async throws {
         let fixture = try integrationCompiler.compileFramework(
             moduleName: "OpaqueSubscriptFixture",
