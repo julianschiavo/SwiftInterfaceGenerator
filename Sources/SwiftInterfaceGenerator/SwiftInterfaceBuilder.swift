@@ -2145,10 +2145,17 @@ struct SwiftInterfaceBuilder: Sendable {
         guard let angleBracketStart = head.firstIndex(of: "<") else {
             return (name: head, paramClause: "", whereClause: "", packParameters: Set<String>())
         }
+        guard let angleBracketEnd = matchingClosingDelimiter(
+            in: head,
+            from: angleBracketStart,
+            open: "<",
+            close: ">"
+        ) else {
+            return (name: head, paramClause: "", whereClause: "", packParameters: Set<String>())
+        }
 
         let name = String(head[..<angleBracketStart])
-        let genericContent = String(head[head.index(after: angleBracketStart)...])
-            .trimmingCharacters(in: CharacterSet(charactersIn: ">"))
+        let genericContent = String(head[head.index(after: angleBracketStart)..<angleBracketEnd])
 
         let whereRange = genericContent.range(of: " where ")
         if let whereRange {

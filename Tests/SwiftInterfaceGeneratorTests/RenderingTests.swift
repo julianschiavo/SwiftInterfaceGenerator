@@ -1418,6 +1418,22 @@ struct ComplexRenderingTests {
     }
 
     @Test
+    func genericWhereClausePreservesNestedClosingAngles() {
+        let interface = renderingBuilder.makeInterface(
+            demangledSymbols: [
+                "nominal type descriptor for Mod.ToggleState",
+                "static Mod.ToggleState.stateFor<A, B where A: Swift.Equatable, B: Swift.Collection, B.Element == Mod.Binding<A>>(item: A, in: B) -> Mod.ToggleState",
+            ],
+            targetTriple: "arm64-apple-macosx15.0",
+            moduleName: "Mod",
+            compilerVersion: "Test"
+        )
+
+        let norm = normalizedInterface(interface)
+        #expect(norm.contains("public static func stateFor<A, B>(item: A, `in`: B) -> ToggleState where A : Swift.Equatable, B : Swift.Collection, B.Element == Binding<A>"))
+    }
+
+    @Test
     func sameModuleConstrainedExtensionMethodsRenderOnConcreteType() {
         let interface = renderingBuilder.makeInterface(
             demangledSymbols: [
