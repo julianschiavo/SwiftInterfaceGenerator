@@ -4728,6 +4728,7 @@ struct SwiftInterfaceBuilder: Sendable {
     ) -> [String: Int] {
         let declarationNames = Set(declarations.keys)
         guard !declarationNames.isEmpty else { return [:] }
+        let knownTypeComponents = localKnownTypeComponents(from: declarations)
 
         var allFragments: [String] = []
         for declaration in declarations.values {
@@ -4747,7 +4748,67 @@ struct SwiftInterfaceBuilder: Sendable {
             }
         }
 
+        for declaration in declarations.values where declaration.resolvedKind != .protocol {
+            guard arityMap[declaration.fullName, default: 0] == 0 else {
+                continue
+            }
+            guard parentName(of: declaration.fullName, in: declarations) == nil else {
+                continue
+            }
+
+            let inferredArity = inferredGenericArityFromMemberPlaceholders(
+                for: declaration,
+                knownTypeComponents: knownTypeComponents,
+                moduleName: moduleName
+            )
+            guard inferredArity > 0 else {
+                continue
+            }
+            arityMap[declaration.fullName] = inferredArity
+        }
+
         return arityMap
+    }
+
+    private func inferredGenericArityFromMemberPlaceholders(
+        for declaration: Declaration,
+        knownTypeComponents: Set<String>,
+        moduleName: String
+    ) -> Int {
+        var excludedTokens = Self.genericExcludedTokens
+        if !moduleName.isEmpty {
+            excludedTokens.insert(moduleName)
+        }
+
+        let propertyFragments = declaration.properties.map(\.rawType)
+        let extensionPropertyFragments = declaration.extensionProperties.map(\.rawType)
+        let subscriptFragments = declaration.subscripts.flatMap { [$0.rawArguments, $0.rawReturnType] }
+        let extensionSubscriptFragments = declaration.extensionSubscripts.flatMap { [$0.rawArguments, $0.rawReturnType] }
+        let enumPayloadFragments = declaration.enumCases.compactMap(\.rawPayload)
+        let enumOwnerFragments = declaration.enumCases.compactMap(\.rawOwnerType)
+        let fragments =
+            propertyFragments
+            + extensionPropertyFragments
+            + subscriptFragments
+            + extensionSubscriptFragments
+            + enumPayloadFragments
+            + enumOwnerFragments
+
+        var genericParameters: Set<String> = []
+        for fragment in fragments {
+            for token in genericParameterTokens(in: fragment, moduleName: moduleName) {
+                guard isLikelyDeclarationTypeParameter(
+                    token,
+                    knownTypeComponents: knownTypeComponents,
+                    excludedTokens: excludedTokens
+                ) else {
+                    continue
+                }
+                genericParameters.insert(token)
+            }
+        }
+
+        return genericParameters.count
     }
 
     /// Returns the simple (unqualified) name from a dot-separated fully-qualified name.

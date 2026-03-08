@@ -1070,6 +1070,26 @@ struct GenericInferenceTests {
         )
         #expect(normalizedInterface(interface).contains("public struct Concrete {"))
     }
+
+    @Test
+    func genericArityInferredFromMemberPlaceholdersWithoutSelfReference() {
+        let interface = renderingBuilder.makeInterface(
+            demangledSymbols: [
+                "nominal type descriptor for Mod.CollectionOfTwo",
+                "property descriptor for Mod.CollectionOfTwo.elements : (A, A)",
+                "Mod.CollectionOfTwo.elements.getter : (A, A)",
+                "Mod.CollectionOfTwo.consume(_: A) -> ()",
+            ],
+            targetTriple: "arm64-apple-macosx15.0",
+            moduleName: "Mod",
+            compilerVersion: "Test"
+        )
+
+        let norm = normalizedInterface(interface)
+        #expect(norm.contains("public struct CollectionOfTwo<A>"))
+        #expect(norm.contains("public var elements: (A, A) { get }"))
+        #expect(norm.contains("public func consume(_: A)"))
+    }
 }
 
 // MARK: - ObjC Type Remapping
