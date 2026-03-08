@@ -1122,12 +1122,6 @@ struct SwiftInterfaceBuilder: Sendable {
         else {
             return nil
         }
-        guard
-            let returnArrow = rawSignature.range(of: " -> ", options: .backwards)
-        else {
-            return nil
-        }
-
         // Find the argument list opening paren. If the signature has a generic
         // clause (e.g. `init<A where A: Seq, A.Element == (X, Y)>(args)`),
         // we must skip past the closing `>` to avoid matching a `(` inside
@@ -1165,10 +1159,26 @@ struct SwiftInterfaceBuilder: Sendable {
         }
 
         let arguments = String(rawSignature[rawSignature.index(after: openingParenthesis)..<closingParenthesis])
-        let effects = rawSignature[rawSignature.index(after: closingParenthesis)..<returnArrow.lowerBound]
-            .trimmingCharacters(in: .whitespaces)
-        let rawReturnSection = String(rawSignature[returnArrow.upperBound...])
-        let (returnType, trailingWhereClause) = splitTrailingWhereClause(from: rawReturnSection)
+        let trailingSignature = String(rawSignature[rawSignature.index(after: closingParenthesis)...])
+        let effects: String
+        let returnType: String
+        let trailingWhereClause: String
+
+        if let returnArrow = topLevelArrowRange(in: trailingSignature) {
+            effects = String(trailingSignature[..<returnArrow.lowerBound])
+                .trimmingCharacters(in: .whitespaces)
+            let rawReturnSection = String(trailingSignature[returnArrow.upperBound...])
+                .trimmingCharacters(in: .whitespaces)
+            let parsedReturn = splitTrailingWhereClause(from: rawReturnSection)
+            returnType = parsedReturn.returnType
+            trailingWhereClause = parsedReturn.whereClause
+        } else {
+            let parsedEffects = splitImplicitVoidSignature(from: trailingSignature)
+            effects = parsedEffects.effects
+            returnType = "()"
+            trailingWhereClause = parsedEffects.whereClause
+        }
+
         var renderedArguments = (try? renderedArgumentList(
             arguments,
             protocolNames: protocolNames,
@@ -2420,6 +2430,84 @@ struct SwiftInterfaceBuilder: Sendable {
             String(returnSection[..<whereRange.lowerBound]).trimmingCharacters(in: .whitespaces),
             String(returnSection[whereRange.lowerBound...]).trimmingCharacters(in: .whitespaces)
         )
+    }
+
+    private func splitImplicitVoidSignature(from trailingSignature: String) -> (effects: String, whereClause: String) {
+        let trimmedSignature = trailingSignature.trimmingCharacters(in: .whitespaces)
+        guard !trimmedSignature.isEmpty else {
+            return ("", "")
+        }
+
+        if trimmedSignature.hasPrefix("where ") {
+            return ("", trimmedSignature)
+        }
+
+        guard let whereRange = trimmedSignature.range(of: " where ", options: .backwards) else {
+            return (trimmedSignature, "")
+        }
+
+        return (
+            String(trimmedSignature[..<whereRange.lowerBound]).trimmingCharacters(in: .whitespaces),
+            String(trimmedSignature[whereRange.lowerBound...]).trimmingCharacters(in: .whitespaces)
+        )
+    }
+
+    private func topLevelArrowRange(in string: String) -> Range<String.Index>? {
+        var angleDepth = 0
+        var braceDepth = 0
+        var bracketDepth = 0
+        var parenthesisDepth = 0
+        var previousCharacter: Character?
+        var index = string.startIndex
+
+        while index < string.endIndex {
+            let character = string[index]
+            switch character {
+            case "(":
+                parenthesisDepth += 1
+            case ")":
+                if parenthesisDepth > 0 {
+                    parenthesisDepth -= 1
+                }
+            case "[":
+                bracketDepth += 1
+            case "]":
+                if bracketDepth > 0 {
+                    bracketDepth -= 1
+                }
+            case "{":
+                braceDepth += 1
+            case "}":
+                if braceDepth > 0 {
+                    braceDepth -= 1
+                }
+            case "<":
+                if previousCharacter != "-" {
+                    angleDepth += 1
+                }
+            case ">":
+                if previousCharacter != "-" && angleDepth > 0 {
+                    angleDepth -= 1
+                }
+            case "-":
+                let nextIndex = string.index(after: index)
+                if angleDepth == 0,
+                   braceDepth == 0,
+                   bracketDepth == 0,
+                   parenthesisDepth == 0,
+                   nextIndex < string.endIndex,
+                   string[nextIndex] == ">" {
+                    return index..<string.index(after: nextIndex)
+                }
+            default:
+                break
+            }
+
+            previousCharacter = character
+            index = string.index(after: index)
+        }
+
+        return nil
     }
 
     private func combinedWhereClause(_ lhs: String, _ rhs: String) -> String {

@@ -1303,6 +1303,23 @@ struct ComplexRenderingTests {
     }
 
     @Test
+    func methodWithClosureParameterAndImplicitVoidReturn() {
+        let interface = renderingBuilder.makeInterface(
+            demangledSymbols: [
+                "nominal type descriptor for Mod.Task",
+                "Mod.Task.configure(handler: () -> ())",
+            ],
+            targetTriple: "arm64-apple-macosx15.0",
+            moduleName: "Mod",
+            compilerVersion: "Test"
+        )
+
+        let norm = normalizedInterface(interface)
+        #expect(norm.contains("public func configure(handler: () -> ())"))
+        #expect(!norm.contains("public func configure(handler: () -> ()) -> "))
+    }
+
+    @Test
     func ownedParameterAnnotationStripped() {
         let interface = renderingBuilder.makeInterface(
             demangledSymbols: [
