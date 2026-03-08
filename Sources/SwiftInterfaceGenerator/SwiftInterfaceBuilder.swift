@@ -1917,7 +1917,7 @@ struct SwiftInterfaceBuilder: Sendable {
         }
         guard
             let openingParenthesis = remainder.firstIndex(of: "("),
-            let memberSeparator = remainder[..<openingParenthesis].lastIndex(of: ".")
+            let memberSeparator = memberDotIndex(in: remainder, before: openingParenthesis)
         else {
             return nil
         }

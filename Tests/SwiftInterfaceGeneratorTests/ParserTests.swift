@@ -428,6 +428,19 @@ struct ProtocolMethodDescriptorTests {
     }
 
     @Test
+    func genericMethodWithProtocolConstraint() {
+        let result = builder.parseProtocolMethodDescriptor(
+            from: "method descriptor for Sample.Layout.firstIndex<A where A: Swift.Hashable>(of: A, subviews: Sample.Subviews, context: Sample.Context) -> Swift.Int?",
+            moduleName: "Sample"
+        )
+        #expect(result?.owner == "Layout")
+        #expect(
+            result?.rawSignature
+                == "firstIndex<A where A: Swift.Hashable>(of: A, subviews: Sample.Subviews, context: Sample.Context) -> Swift.Int?"
+        )
+    }
+
+    @Test
     func nonMethodLineReturnsNil() {
         #expect(
             builder.parseProtocolMethodDescriptor(
