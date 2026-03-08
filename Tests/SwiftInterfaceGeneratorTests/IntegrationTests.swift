@@ -1733,6 +1733,44 @@ struct IntegrationTests {
         )
     }
 
+    @Test
+    func protocolExtensionDefaultPropertyRendersAsExtension() async throws {
+        let fixture = try integrationCompiler.compileFramework(
+            moduleName: "ProtocolExtensionFixture",
+            sources: [
+                "ProtocolExtensionFixture.swift": """
+                public protocol View {
+                    associatedtype Body
+                    var body: Self.Body { get }
+                }
+
+                public protocol PrimitiveView: View {}
+
+                public extension PrimitiveView {
+                    var body: Never {
+                        fatalError()
+                    }
+                }
+
+                public struct Leaf: PrimitiveView {
+                    public init() {}
+                }
+                """
+            ]
+        )
+        let contents = try await generateInterface(fixture: fixture)
+        let normalized = normalizedInterface(contents)
+
+        #expect(normalized.contains("public protocol View {"))
+        #expect(normalized.contains("associatedtype Body"))
+        #expect(normalized.contains("var body: Self.Body { get }"))
+        #expect(normalized.contains("public protocol PrimitiveView: View {"))
+        #expect(normalized.contains("extension PrimitiveView {"))
+        #expect(normalized.contains("public var body: Swift.Never { get }"))
+        #expect(normalized.contains("public struct Leaf: PrimitiveView"))
+        #expect(!normalized.contains("public protocol PrimitiveView: View {\n  var body: Swift.Never { get }"))
+    }
+
     // MARK: - Unavailable Module Filtering
 
     @Test

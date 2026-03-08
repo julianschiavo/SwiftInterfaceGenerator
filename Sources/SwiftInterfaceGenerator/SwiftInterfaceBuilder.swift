@@ -26,6 +26,7 @@ struct SwiftInterfaceBuilder: Sendable {
             let rawType: String
             let isStatic: Bool
             let hasSetter: Bool
+            let extensionWhereClause: String
             let order: Int
         }
 
@@ -41,6 +42,7 @@ struct SwiftInterfaceBuilder: Sendable {
             let rawArguments: String
             let rawReturnType: String
             let hasSetter: Bool
+            let extensionWhereClause: String
             let order: Int
         }
 
@@ -68,10 +70,15 @@ struct SwiftInterfaceBuilder: Sendable {
         var conformances: [String] = []
         var associatedTypes: [AssociatedType] = []
         var properties: [Property] = []
+        var extensionProperties: [Property] = []
         var subscripts: [Subscript] = []
+        var extensionSubscripts: [Subscript] = []
         var initializers: [Callable] = []
+        var extensionInitializers: [Callable] = []
         var methods: [Callable] = []
+        var extensionMethods: [Callable] = []
         var staticMethods: [Callable] = []
+        var extensionStaticMethods: [Callable] = []
         var enumCases: [EnumCase] = []
 
         /// Adds a protocol conformance if not already present.
@@ -122,6 +129,21 @@ struct SwiftInterfaceBuilder: Sendable {
             properties.append(property)
         }
 
+        /// Adds a protocol-extension property, deduplicating by name and static-ness.
+        mutating func addExtensionProperty(_ property: Property) {
+            if let existingIndex = extensionProperties.firstIndex(where: {
+                $0.name == property.name
+                    && $0.isStatic == property.isStatic
+                    && $0.extensionWhereClause == property.extensionWhereClause
+            }) {
+                if property.hasSetter && !extensionProperties[existingIndex].hasSetter {
+                    extensionProperties[existingIndex] = property
+                }
+                return
+            }
+            extensionProperties.append(property)
+        }
+
         /// Adds a subscript, deduplicating by argument and return type.
         mutating func addSubscript(_ subscriptMember: Subscript) {
             guard !subscripts.contains(where: {
@@ -132,12 +154,32 @@ struct SwiftInterfaceBuilder: Sendable {
             subscripts.append(subscriptMember)
         }
 
+        /// Adds a protocol-extension subscript, deduplicating by arguments, return type, and constraint.
+        mutating func addExtensionSubscript(_ subscriptMember: Subscript) {
+            guard !extensionSubscripts.contains(where: {
+                $0.rawArguments == subscriptMember.rawArguments
+                    && $0.rawReturnType == subscriptMember.rawReturnType
+                    && $0.extensionWhereClause == subscriptMember.extensionWhereClause
+            }) else {
+                return
+            }
+            extensionSubscripts.append(subscriptMember)
+        }
+
         /// Adds an initializer, deduplicating by raw signature.
         mutating func addInitializer(_ callable: Callable) {
             guard !initializers.contains(where: { $0.rawSignature == callable.rawSignature }) else {
                 return
             }
             initializers.append(callable)
+        }
+
+        /// Adds a protocol-extension initializer, deduplicating by raw signature.
+        mutating func addExtensionInitializer(_ callable: Callable) {
+            guard !extensionInitializers.contains(where: { $0.rawSignature == callable.rawSignature }) else {
+                return
+            }
+            extensionInitializers.append(callable)
         }
 
         /// Adds an instance method, deduplicating by signature and static-ness.
@@ -148,12 +190,30 @@ struct SwiftInterfaceBuilder: Sendable {
             methods.append(callable)
         }
 
+        /// Adds a protocol-extension instance method, deduplicating by signature and static-ness.
+        mutating func addExtensionMethod(_ callable: Callable) {
+            guard !extensionMethods.contains(where: {
+                $0.rawSignature == callable.rawSignature && $0.isStatic == callable.isStatic
+            }) else {
+                return
+            }
+            extensionMethods.append(callable)
+        }
+
         /// Adds a static method, deduplicating by raw signature.
         mutating func addStaticMethod(_ callable: Callable) {
             guard !staticMethods.contains(where: { $0.rawSignature == callable.rawSignature }) else {
                 return
             }
             staticMethods.append(callable)
+        }
+
+        /// Adds a protocol-extension static method, deduplicating by raw signature.
+        mutating func addExtensionStaticMethod(_ callable: Callable) {
+            guard !extensionStaticMethods.contains(where: { $0.rawSignature == callable.rawSignature }) else {
+                return
+            }
+            extensionStaticMethods.append(callable)
         }
 
         /// Adds an enum case, deduplicating by name.
@@ -168,12 +228,23 @@ struct SwiftInterfaceBuilder: Sendable {
         ///
         /// All raw type-bearing strings from this declaration's members (excluding conformances).
         var rawTypeFragments: [String] {
-            initializers.map(\.rawSignature) +
-            methods.map(\.rawSignature) +
-            staticMethods.map(\.rawSignature) +
-            properties.map(\.rawType) +
-            enumCases.compactMap(\.rawPayload) +
-            enumCases.compactMap(\.rawOwnerType)
+            let callableFragments =
+                initializers.map(\.rawSignature)
+                + extensionInitializers.map(\.rawSignature)
+                + methods.map(\.rawSignature)
+                + extensionMethods.map(\.rawSignature)
+                + staticMethods.map(\.rawSignature)
+                + extensionStaticMethods.map(\.rawSignature)
+            let propertyFragments =
+                properties.map(\.rawType)
+                + extensionProperties.flatMap { [$0.rawType, $0.extensionWhereClause] }
+            let subscriptFragments =
+                subscripts.flatMap { [$0.rawArguments, $0.rawReturnType] }
+                + extensionSubscripts.flatMap { [$0.rawArguments, $0.rawReturnType, $0.extensionWhereClause] }
+            let enumFragments =
+                enumCases.compactMap(\.rawPayload)
+                + enumCases.compactMap(\.rawOwnerType)
+            return callableFragments + propertyFragments + subscriptFragments + enumFragments
         }
 
         /// Protocol takes priority, then enum (if cases exist), then class, defaulting to struct.
@@ -265,11 +336,17 @@ struct SwiftInterfaceBuilder: Sendable {
         let nominalTypePrefix = "nominal type descriptor for \(moduleName)."
         let metaclassPrefix = "metaclass for \(moduleName)."
         let classMetadataPrefix = "class metadata base offset for \(moduleName)."
+        let protocolTypeNames = Set(
+            demangledSymbols.compactMap {
+                extractedTypeName(from: $0, prefix: protocolDescriptorPrefix, moduleName: moduleName)
+            }
+        )
         let concreteTypeNames = Set(
             demangledSymbols.compactMap {
                 extractedTypeName(from: $0, prefix: nominalTypePrefix, moduleName: moduleName)
             }
         )
+        let extensionMemberOwners = concreteTypeNames.union(protocolTypeNames)
 
         func declaration(named fullName: String, order: Int) -> Declaration {
             declarations[fullName] ?? Declaration(fullName: fullName, order: order)
@@ -360,17 +437,30 @@ struct SwiftInterfaceBuilder: Sendable {
             if let subscriptMember = parseSubscriptDescriptor(
                 from: line,
                 sortedSymbols: sortedSymbols,
-                moduleName: moduleName
+                moduleName: moduleName,
+                allowExtensionMembersOn: extensionMemberOwners
             ) {
                 var value = declaration(named: subscriptMember.owner, order: order)
-                value.addSubscript(
-                    Declaration.Subscript(
-                        rawArguments: subscriptMember.rawArguments,
-                        rawReturnType: subscriptMember.rawReturnType,
-                        hasSetter: subscriptMember.hasSetter,
-                        order: order
-                    )
+                let subscriptDeclaration = Declaration.Subscript(
+                    rawArguments: subscriptMember.rawArguments,
+                    rawReturnType: subscriptMember.rawReturnType,
+                    hasSetter: subscriptMember.hasSetter,
+                    extensionWhereClause: extensionConstraintClause(
+                        fromMemberDescriptor: line,
+                        memberDescriptorPrefix: "property descriptor for ",
+                        moduleName: moduleName
+                    ),
+                    order: order
                 )
+                if isSameModuleExtensionMember(
+                    line,
+                    memberPrefix: "property descriptor for ",
+                    moduleName: moduleName
+                ), protocolTypeNames.contains(subscriptMember.owner) {
+                    value.addExtensionSubscript(subscriptDeclaration)
+                } else {
+                    value.addSubscript(subscriptDeclaration)
+                }
                 setDeclaration(value)
                 continue
             }
@@ -378,18 +468,31 @@ struct SwiftInterfaceBuilder: Sendable {
             if let property = parsePropertyDescriptor(
                 from: line,
                 sortedSymbols: sortedSymbols,
-                moduleName: moduleName
+                moduleName: moduleName,
+                allowExtensionMembersOn: extensionMemberOwners
             ) {
                 var value = declaration(named: property.owner, order: order)
-                value.addProperty(
-                    Declaration.Property(
-                        name: property.name,
-                        rawType: property.rawType,
-                        isStatic: property.isStatic,
-                        hasSetter: property.hasSetter,
-                        order: order
-                    )
+                let propertyDeclaration = Declaration.Property(
+                    name: property.name,
+                    rawType: property.rawType,
+                    isStatic: property.isStatic,
+                    hasSetter: property.hasSetter,
+                    extensionWhereClause: extensionConstraintClause(
+                        fromMemberDescriptor: line,
+                        memberDescriptorPrefix: "property descriptor for ",
+                        moduleName: moduleName
+                    ),
+                    order: order
                 )
+                if isSameModuleExtensionMember(
+                    line,
+                    memberPrefix: "property descriptor for ",
+                    moduleName: moduleName
+                ), protocolTypeNames.contains(property.owner) {
+                    value.addExtensionProperty(propertyDeclaration)
+                } else {
+                    value.addProperty(propertyDeclaration)
+                }
                 setDeclaration(value)
                 continue
             }
@@ -420,6 +523,7 @@ struct SwiftInterfaceBuilder: Sendable {
                         rawType: property.rawType,
                         isStatic: property.isStatic,
                         hasSetter: property.hasSetter,
+                        extensionWhereClause: "",
                         order: order
                     )
                 )
@@ -457,27 +561,38 @@ struct SwiftInterfaceBuilder: Sendable {
                 from: line,
                 isStatic: true,
                 moduleName: moduleName,
-                allowExtensionMembersOn: concreteTypeNames
+                allowExtensionMembersOn: extensionMemberOwners
             ) {
                 var value = declaration(named: callable.owner, order: order)
+                let isProtocolExtensionMember = isSameModuleExtensionMember(
+                    line,
+                    memberPrefix: "static ",
+                    moduleName: moduleName
+                ) && protocolTypeNames.contains(callable.owner)
                 if callable.isInitializer {
-                    value.addInitializer(
-                        Declaration.Callable(
-                            rawSignature: callable.rawSignature,
-                            isStatic: true,
-                            isInitializer: true,
-                            order: order
-                        )
+                    let callableDeclaration = Declaration.Callable(
+                        rawSignature: callable.rawSignature,
+                        isStatic: true,
+                        isInitializer: true,
+                        order: order
                     )
+                    if isProtocolExtensionMember {
+                        value.addExtensionInitializer(callableDeclaration)
+                    } else {
+                        value.addInitializer(callableDeclaration)
+                    }
                 } else {
-                    value.addStaticMethod(
-                        Declaration.Callable(
-                            rawSignature: callable.rawSignature,
-                            isStatic: true,
-                            isInitializer: false,
-                            order: order
-                        )
+                    let callableDeclaration = Declaration.Callable(
+                        rawSignature: callable.rawSignature,
+                        isStatic: true,
+                        isInitializer: false,
+                        order: order
                     )
+                    if isProtocolExtensionMember {
+                        value.addExtensionStaticMethod(callableDeclaration)
+                    } else {
+                        value.addStaticMethod(callableDeclaration)
+                    }
                 }
                 setDeclaration(value)
                 continue
@@ -487,29 +602,41 @@ struct SwiftInterfaceBuilder: Sendable {
                 from: line,
                 isStatic: false,
                 moduleName: moduleName,
-                allowExtensionMembersOn: concreteTypeNames
+                allowExtensionMembersOn: extensionMemberOwners
             ) {
                 var value = declaration(named: callable.owner, order: order)
+                let isProtocolExtensionMember = isSameModuleExtensionMember(
+                    line,
+                    memberPrefix: "",
+                    moduleName: moduleName
+                ) && protocolTypeNames.contains(callable.owner)
                 if callable.isInitializer {
-                    value.addInitializer(
-                        Declaration.Callable(
-                            rawSignature: callable.rawSignature,
-                            isStatic: false,
-                            isInitializer: true,
-                            order: order
-                        )
+                    let callableDeclaration = Declaration.Callable(
+                        rawSignature: callable.rawSignature,
+                        isStatic: false,
+                        isInitializer: true,
+                        order: order
                     )
+                    if isProtocolExtensionMember {
+                        value.addExtensionInitializer(callableDeclaration)
+                    } else {
+                        value.addInitializer(callableDeclaration)
+                    }
                 } else {
-                    value.addMethod(
-                        Declaration.Callable(
-                            rawSignature: callable.rawSignature,
-                            isStatic: false,
-                            isInitializer: false,
-                            order: order
-                        )
+                    let callableDeclaration = Declaration.Callable(
+                        rawSignature: callable.rawSignature,
+                        isStatic: false,
+                        isInitializer: false,
+                        order: order
                     )
+                    if isProtocolExtensionMember {
+                        value.addExtensionMethod(callableDeclaration)
+                    } else {
+                        value.addMethod(callableDeclaration)
+                    }
                 }
                 setDeclaration(value)
+                continue
             }
 
             if let dispatchThunk = parseDispatchThunk(from: line, moduleName: moduleName) {
@@ -535,6 +662,7 @@ struct SwiftInterfaceBuilder: Sendable {
                     )
                 }
                 setDeclaration(value)
+                continue
             }
         }
 
@@ -546,8 +674,13 @@ struct SwiftInterfaceBuilder: Sendable {
         for parentName in declaredNames {
             let prefix = "\(parentName)."
             for decl in declarations.values {
-                let stubCandidateFragments = decl.properties.map(\.rawType) + decl.enumCases.compactMap(\.rawPayload)
-            for rawFragment in stubCandidateFragments {
+                let stubCandidateFragments =
+                    decl.properties.map(\.rawType)
+                    + decl.extensionProperties.map(\.rawType)
+                    + decl.subscripts.flatMap { [$0.rawArguments, $0.rawReturnType] }
+                    + decl.extensionSubscripts.flatMap { [$0.rawArguments, $0.rawReturnType] }
+                    + decl.enumCases.compactMap(\.rawPayload)
+                for rawFragment in stubCandidateFragments {
                     guard rawFragment.contains(prefix) else { continue }
                     // Find all occurrences of ParentName.NestedType
                     var searchStart = rawFragment.startIndex
@@ -694,6 +827,17 @@ struct SwiftInterfaceBuilder: Sendable {
                     level: 0
                 )
             )
+            lines.append("")
+        }
+
+        for block in renderedProtocolExtensionBlocks(
+            declarations: declarations,
+            protocolNames: protocolNames,
+            knownTypeComponents: knownTypeComponents,
+            allowedPrefixes: allowedPrefixes,
+            moduleName: moduleName
+        ) {
+            lines.append(block)
             lines.append("")
         }
 
@@ -946,6 +1090,251 @@ struct SwiftInterfaceBuilder: Sendable {
         }
 
         return ([header] + body + ["\(indent)}"]).joined(separator: "\n")
+    }
+
+    private func renderedProtocolExtensionBlocks(
+        declarations: [String: Declaration],
+        protocolNames: Set<String>,
+        knownTypeComponents: Set<String>,
+        allowedPrefixes: Set<String>?,
+        moduleName: String
+    ) -> [String] {
+        declarations.values
+            .filter {
+                $0.resolvedKind == .protocol
+                    && (
+                        !$0.extensionProperties.isEmpty
+                            || !$0.extensionSubscripts.isEmpty
+                            || !$0.extensionInitializers.isEmpty
+                            || !$0.extensionMethods.isEmpty
+                            || !$0.extensionStaticMethods.isEmpty
+                    )
+            }
+            .sorted(by: { $0.order < $1.order })
+            .flatMap {
+                renderedProtocolExtensionBlocks(
+                    for: $0,
+                    declarations: declarations,
+                    protocolNames: protocolNames,
+                    knownTypeComponents: knownTypeComponents,
+                    allowedPrefixes: allowedPrefixes,
+                    moduleName: moduleName
+                )
+            }
+    }
+
+    private func renderedProtocolExtensionBlocks(
+        for declaration: Declaration,
+        declarations: [String: Declaration],
+        protocolNames: Set<String>,
+        knownTypeComponents: Set<String>,
+        allowedPrefixes: Set<String>?,
+        moduleName: String
+    ) -> [String] {
+        let ownerName = renderedQualifiedDeclarationName(declaration.fullName, moduleName: moduleName)
+        var blocks: [String] = []
+
+        let unconstrainedProperties = declaration.extensionProperties
+            .filter { $0.extensionWhereClause.isEmpty }
+        let unconstrainedSubscripts = declaration.extensionSubscripts
+            .filter { $0.extensionWhereClause.isEmpty }
+
+        let unconstrainedBlock = renderedProtocolExtensionBlock(
+            ownerName: ownerName,
+            whereClause: "",
+            properties: unconstrainedProperties,
+            subscripts: unconstrainedSubscripts,
+            initializers: declaration.extensionInitializers,
+            methods: declaration.extensionMethods,
+            staticMethods: declaration.extensionStaticMethods,
+            ownerDeclaration: declaration,
+            declarations: declarations,
+            protocolNames: protocolNames,
+            knownTypeComponents: knownTypeComponents,
+            allowedPrefixes: allowedPrefixes,
+            moduleName: moduleName
+        )
+        if let unconstrainedBlock {
+            blocks.append(unconstrainedBlock)
+        }
+
+        let constrainedWhereClauses = Array(
+            Set(
+                declaration.extensionProperties.map(\.extensionWhereClause)
+                    + declaration.extensionSubscripts.map(\.extensionWhereClause)
+            )
+        )
+        .filter { !$0.isEmpty }
+        .sorted()
+
+        for whereClause in constrainedWhereClauses {
+            let block = renderedProtocolExtensionBlock(
+                ownerName: ownerName,
+                whereClause: whereClause,
+                properties: declaration.extensionProperties.filter { $0.extensionWhereClause == whereClause },
+                subscripts: declaration.extensionSubscripts.filter { $0.extensionWhereClause == whereClause },
+                initializers: [],
+                methods: [],
+                staticMethods: [],
+                ownerDeclaration: declaration,
+                declarations: declarations,
+                protocolNames: protocolNames,
+                knownTypeComponents: knownTypeComponents,
+                allowedPrefixes: allowedPrefixes,
+                moduleName: moduleName
+            )
+            if let block {
+                blocks.append(block)
+            }
+        }
+
+        return blocks
+    }
+
+    private func renderedProtocolExtensionBlock(
+        ownerName: String,
+        whereClause: String,
+        properties: [Declaration.Property],
+        subscripts: [Declaration.Subscript],
+        initializers: [Declaration.Callable],
+        methods: [Declaration.Callable],
+        staticMethods: [Declaration.Callable],
+        ownerDeclaration: Declaration,
+        declarations: [String: Declaration],
+        protocolNames: Set<String>,
+        knownTypeComponents: Set<String>,
+        allowedPrefixes: Set<String>?,
+        moduleName: String
+    ) -> String? {
+        guard !containsUnrenderableExternalModuleReference(whereClause, allowedPrefixes: allowedPrefixes) else {
+            return nil
+        }
+
+        var body: [String] = []
+
+        for property in properties.sorted(by: { $0.order < $1.order }) {
+            guard
+                !containsUnrenderableExternalModuleReference(
+                    property.rawType,
+                    allowedPrefixes: allowedPrefixes
+                ),
+                !containsUnrenderableExternalModuleReference(
+                    property.extensionWhereClause,
+                    allowedPrefixes: allowedPrefixes
+                )
+            else {
+                continue
+            }
+            let renderedType = renderedTypeName(
+                property.rawType,
+                protocolNames: protocolNames,
+                moduleName: moduleName
+            )
+            let accessors = property.hasSetter ? "{ get set }" : "{ get }"
+            let propertyLine = "  public \(property.isStatic ? "static " : "")var \(escapedIdentifier(property.name)): \(renderedType) \(accessors)"
+                .replacingSelfTypePattern()
+            body.append(propertyLine)
+        }
+
+        for subscriptMember in subscripts.sorted(by: { $0.order < $1.order }) {
+            guard
+                !containsUnrenderableExternalModuleReference(
+                    subscriptMember.rawArguments,
+                    allowedPrefixes: allowedPrefixes
+                ),
+                !containsUnrenderableExternalModuleReference(
+                    subscriptMember.rawReturnType,
+                    allowedPrefixes: allowedPrefixes
+                ),
+                !containsUnrenderableExternalModuleReference(
+                    subscriptMember.extensionWhereClause,
+                    allowedPrefixes: allowedPrefixes
+                )
+            else {
+                continue
+            }
+            let renderedArguments = (try? renderedArgumentList(
+                subscriptMember.rawArguments,
+                protocolNames: protocolNames,
+                moduleName: moduleName
+            )) ?? subscriptMember.rawArguments
+            let renderedReturnType = renderedTypeName(
+                subscriptMember.rawReturnType,
+                protocolNames: protocolNames,
+                moduleName: moduleName
+            )
+            let accessors = subscriptMember.hasSetter ? "{ get set }" : "{ get }"
+            let subscriptLine = "  public subscript(\(renderedArguments)) -> \(renderedReturnType) \(accessors)"
+                .replacingSelfTypePattern()
+            body.append(subscriptLine)
+        }
+
+        for initializer in initializers.sorted(by: { $0.order < $1.order }) {
+            if let rendered = renderedCallable(
+                initializer,
+                protocolNames: protocolNames,
+                allowedPrefixes: allowedPrefixes,
+                level: 1,
+                isProtocolRequirement: true,
+                knownTypeComponents: knownTypeComponents,
+                moduleName: moduleName,
+                ownerName: simpleName(of: ownerDeclaration.fullName),
+                ownerDeclaration: ownerDeclaration,
+                declarations: declarations,
+                forcePublicAccess: true
+            ) {
+                body.append(rendered)
+            }
+        }
+
+        for method in methods.sorted(by: { $0.order < $1.order }) {
+            if let rendered = renderedCallable(
+                method,
+                protocolNames: protocolNames,
+                allowedPrefixes: allowedPrefixes,
+                level: 1,
+                isProtocolRequirement: true,
+                knownTypeComponents: knownTypeComponents,
+                moduleName: moduleName,
+                ownerName: simpleName(of: ownerDeclaration.fullName),
+                ownerDeclaration: ownerDeclaration,
+                declarations: declarations,
+                forcePublicAccess: true
+            ) {
+                body.append(rendered)
+            }
+        }
+
+        for method in staticMethods.sorted(by: { $0.order < $1.order }) {
+            if let rendered = renderedCallable(
+                method,
+                protocolNames: protocolNames,
+                allowedPrefixes: allowedPrefixes,
+                level: 1,
+                isProtocolRequirement: true,
+                knownTypeComponents: knownTypeComponents,
+                moduleName: moduleName,
+                ownerName: simpleName(of: ownerDeclaration.fullName),
+                ownerDeclaration: ownerDeclaration,
+                declarations: declarations,
+                forcePublicAccess: true
+            ) {
+                body.append(rendered)
+            }
+        }
+
+        guard !body.isEmpty else {
+            return nil
+        }
+
+        return (["extension \(ownerName)\(whereClause) {"] + body + ["}"]).joined(separator: "\n")
+    }
+
+    private func renderedQualifiedDeclarationName(_ fullName: String, moduleName: String) -> String {
+        cleanedTypeName(fullName, moduleName: moduleName)
+            .split(separator: ".")
+            .map { escapedIdentifier(String($0)) }
+            .joined(separator: ".")
     }
 
     /// Renders the conformance clause (e.g. `: Hashable, Codable`) for a declaration.
@@ -1222,7 +1611,8 @@ struct SwiftInterfaceBuilder: Sendable {
         moduleName: String,
         ownerName: String? = nil,
         ownerDeclaration: Declaration,
-        declarations: [String: Declaration]
+        declarations: [String: Declaration],
+        forcePublicAccess: Bool = false
     ) -> String? {
         let indent = String(repeating: "  ", count: level)
         let rawSignature = callable.rawSignature
@@ -1336,7 +1726,7 @@ struct SwiftInterfaceBuilder: Sendable {
             packParameters: genericParsed.packParameters
         )
 
-        let accessPrefix = isProtocolRequirement ? "" : "public "
+        let accessPrefix = (isProtocolRequirement && !forcePublicAccess) ? "" : "public "
 
         var result: String
         if callable.isInitializer {
@@ -2388,7 +2778,8 @@ struct SwiftInterfaceBuilder: Sendable {
     func parsePropertyDescriptor(
         from line: String,
         sortedSymbols: SortedSymbols,
-        moduleName: String
+        moduleName: String,
+        allowExtensionMembersOn allowedExtensionOwners: Set<String> = []
     ) -> (owner: String, name: String, rawType: String, isStatic: Bool, hasSetter: Bool)? {
         let prefix = "property descriptor for "
         guard line.hasPrefix(prefix) else {
@@ -2404,6 +2795,15 @@ struct SwiftInterfaceBuilder: Sendable {
             isStatic = false
         }
 
+        let extensionPrefix = "(extension in \(moduleName)):"
+        let isExtensionMember: Bool
+        if remainder.hasPrefix(extensionPrefix) {
+            isExtensionMember = true
+            remainder.removeFirst(extensionPrefix.count)
+        } else {
+            isExtensionMember = false
+        }
+
         guard
             remainder.hasPrefix("\(moduleName)."),
             let typeSeparator = remainder.range(of: " : ")
@@ -2416,10 +2816,14 @@ struct SwiftInterfaceBuilder: Sendable {
         guard let member = parseOwnerMemberPath(path, moduleName: moduleName) else {
             return nil
         }
+        if isExtensionMember, !allowedExtensionOwners.contains(member.owner) {
+            return nil
+        }
 
         let staticPrefix = isStatic ? "static " : ""
-        let getterPrefix = "\(staticPrefix)\(moduleName).\(member.owner).\(member.name).getter : "
-        let setterPrefix = "\(staticPrefix)\(moduleName).\(member.owner).\(member.name).setter : "
+        let memberPrefix = isExtensionMember ? "\(extensionPrefix)\(moduleName)." : "\(moduleName)."
+        let getterPrefix = "\(staticPrefix)\(memberPrefix)\(member.owner).\(member.name).getter : "
+        let setterPrefix = "\(staticPrefix)\(memberPrefix)\(member.owner).\(member.name).setter : "
         let dispatchSetterPrefix = "dispatch thunk of \(moduleName).\(member.owner).\(member.name).setter : "
 
         let hasGetter = sortedSymbols.containsPrefix(getterPrefix)
@@ -2448,14 +2852,29 @@ struct SwiftInterfaceBuilder: Sendable {
     func parseSubscriptDescriptor(
         from line: String,
         sortedSymbols: SortedSymbols,
-        moduleName: String
+        moduleName: String,
+        allowExtensionMembersOn allowedExtensionOwners: Set<String> = []
     ) -> (owner: String, rawArguments: String, rawReturnType: String, hasSetter: Bool)? {
-        let prefix = "property descriptor for \(moduleName)."
+        let prefix = "property descriptor for "
         guard line.hasPrefix(prefix) else {
             return nil
         }
 
-        let remainder = String(line.dropFirst(prefix.count))
+        var remainder = String(line.dropFirst(prefix.count))
+        let extensionPrefix = "(extension in \(moduleName)):"
+        let isExtensionMember: Bool
+        if remainder.hasPrefix(extensionPrefix) {
+            isExtensionMember = true
+            remainder.removeFirst(extensionPrefix.count)
+        } else {
+            isExtensionMember = false
+        }
+
+        let modulePrefix = "\(moduleName)."
+        guard remainder.hasPrefix(modulePrefix) else {
+            return nil
+        }
+        remainder.removeFirst(modulePrefix.count)
         guard let subscriptRange = remainder.range(of: ".subscript(") else {
             return nil
         }
@@ -2474,11 +2893,15 @@ struct SwiftInterfaceBuilder: Sendable {
         }
 
         let owner = String(remainder[..<subscriptRange.lowerBound])
+        if isExtensionMember, !allowedExtensionOwners.contains(removingGenericArguments(from: owner)) {
+            return nil
+        }
         let rawArguments = String(remainder[subscriptRange.upperBound..<closingParenthesis])
         let rawReturnType = String(remainder[returnArrow.upperBound...])
 
-        let getterPrefix = "\(moduleName).\(owner).subscript.getter : "
-        let setterPrefix = "\(moduleName).\(owner).subscript.setter : "
+        let memberPrefix = isExtensionMember ? "\(extensionPrefix)\(moduleName)." : modulePrefix
+        let getterPrefix = "\(memberPrefix)\(owner).subscript.getter : "
+        let setterPrefix = "\(memberPrefix)\(owner).subscript.setter : "
         let dispatchSetterPrefix = "dispatch thunk of \(moduleName).\(owner).subscript.setter : "
 
         let hasSetter = sortedSymbols.containsPrefix(setterPrefix)
@@ -2790,6 +3213,57 @@ struct SwiftInterfaceBuilder: Sendable {
             owner: String(stripped[..<separator]),
             name: String(stripped[stripped.index(after: separator)...])
         )
+    }
+
+    private func isSameModuleExtensionMember(
+        _ line: String,
+        memberPrefix: String,
+        moduleName: String
+    ) -> Bool {
+        guard line.hasPrefix(memberPrefix) else {
+            return false
+        }
+
+        var remainder = String(line.dropFirst(memberPrefix.count))
+        if remainder.hasPrefix("static ") {
+            remainder.removeFirst("static ".count)
+        }
+
+        return remainder.hasPrefix("(extension in \(moduleName)):\(moduleName).")
+    }
+
+    private func extensionConstraintClause(
+        fromMemberDescriptor line: String,
+        memberDescriptorPrefix: String,
+        moduleName: String
+    ) -> String {
+        guard line.hasPrefix(memberDescriptorPrefix) else {
+            return ""
+        }
+
+        var remainder = String(line.dropFirst(memberDescriptorPrefix.count))
+        if remainder.hasPrefix("static ") {
+            remainder.removeFirst("static ".count)
+        }
+
+        let extensionPrefix = "(extension in \(moduleName)):"
+        guard remainder.hasPrefix(extensionPrefix) else {
+            return ""
+        }
+        remainder.removeFirst(extensionPrefix.count)
+
+        guard let memberSeparator = memberDotIndex(in: remainder, before: remainder.endIndex) else {
+            return ""
+        }
+
+        let ownerPathWithModule = String(remainder[..<memberSeparator])
+        let modulePrefix = "\(moduleName)."
+        guard ownerPathWithModule.hasPrefix(modulePrefix) else {
+            return ""
+        }
+
+        let ownerPath = String(ownerPathWithModule.dropFirst(modulePrefix.count))
+        return cleanedExtensionConstraintClause(from: ownerPath, moduleName: moduleName)
     }
 
     private func containsAccessorLikeSymbol(_ remainder: String) -> Bool {
