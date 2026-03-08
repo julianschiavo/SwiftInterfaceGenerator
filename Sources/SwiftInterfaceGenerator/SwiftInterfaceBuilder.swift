@@ -2543,10 +2543,13 @@ struct SwiftInterfaceBuilder: Sendable {
 
     private func containsOperatorNotation(_ string: String) -> Bool {
         string.contains(" infix(")
+            || string.contains(" infix<")
             || string.contains("infix ")
             || string.contains(" prefix(")
+            || string.contains(" prefix<")
             || string.contains("prefix ")
             || string.contains(" postfix(")
+            || string.contains(" postfix<")
             || string.contains("postfix ")
     }
 

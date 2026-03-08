@@ -599,6 +599,7 @@ struct MakeInterfaceTests {
                 "property descriptor for Mod.Vector.x : Swift.Double",
                 "Mod.Vector.x.getter : Swift.Double",
                 "static Mod.Vector.+ infix(Mod.Vector, Mod.Vector) -> Mod.Vector",
+                "static Mod.Vector.== infix<A>(Mod.Vector, A) -> Swift.Bool where A : Swift.Hashable",
                 "static Mod.Vector.prefix -(Mod.Vector) -> Mod.Vector",
                 "static Mod.Vector.- prefix(Mod.Vector) -> Mod.Vector",
             ],
