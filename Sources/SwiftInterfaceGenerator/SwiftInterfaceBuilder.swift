@@ -735,7 +735,14 @@ struct SwiftInterfaceBuilder: Sendable {
                         let nestedName = String(rawFragment[prefixRange.upperBound..<nameEnd])
                         let fullName = "\(parentName).\(nestedName)"
                         if !declaredNames.contains(fullName), stubs[fullName] == nil {
-                            stubs[fullName] = Declaration(fullName: fullName, order: Int.max - stubs.count)
+                            var stub = Declaration(
+                                fullName: fullName,
+                                order: Int.max - stubs.count
+                            )
+                            if declarations[parentName]?.isExternalExtension == true {
+                                stub.isExternalExtension = true
+                            }
+                            stubs[fullName] = stub
                         }
                         searchStart = nameEnd
                     }

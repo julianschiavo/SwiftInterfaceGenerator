@@ -2024,7 +2024,8 @@ struct ComplexRenderingTests {
         let interface = filteringBuilder.makeInterface(
             demangledSymbols: [
                 "nominal type descriptor for Mod.RenderNode",
-                "(extension in Mod):__C.AGSubgraphRef.debug() -> Swift.Int",
+                "property descriptor for (extension in Mod):__C.AGSubgraphRef.metadata : __C.AGSubgraphRef.Metadata",
+                "(extension in Mod):__C.AGSubgraphRef.metadata.getter : __C.AGSubgraphRef.Metadata",
                 "Mod.RenderNode.init(contentSubgraph: __C.AGSubgraphRef) -> Mod.RenderNode",
             ],
             targetTriple: "arm64-apple-macosx15.0",
