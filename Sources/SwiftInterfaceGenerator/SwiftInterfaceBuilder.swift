@@ -1784,7 +1784,7 @@ struct SwiftInterfaceBuilder: Sendable {
     }
 
     private func normalizingPrimaryAssociatedTypeExistentials(in string: String) -> String {
-        guard string.contains("<Self.") else {
+        guard string.contains("<") && string.contains("==") else {
             return string
         }
 
@@ -1824,12 +1824,23 @@ struct SwiftInterfaceBuilder: Sendable {
             clause[clause.index(after: clause.startIndex)..<clause.index(before: clause.endIndex)]
         )
         .trimmingCharacters(in: .whitespaces)
-        guard let match = body.wholeMatch(of: #/^Self\.[A-Za-z_][A-Za-z0-9_]*\s*==\s*(.+)$/#) else {
+        guard body.contains("==") else {
             return nil
         }
 
-        let replacement = String(match.1).trimmingCharacters(in: .whitespaces)
-        guard !replacement.isEmpty else {
+        let parts = body
+            .components(separatedBy: "==")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+
+        guard parts.count == 2, parts[0] == parts[1], !parts[0].isEmpty else {
+            return nil
+        }
+        guard let firstCharacter = parts[0].first, firstCharacter.isUppercase else {
+            return nil
+        }
+
+        let replacement = parts[0]
+        guard replacement != "Self" && !replacement.hasPrefix("Self.") else {
             return nil
         }
 

@@ -1362,6 +1362,38 @@ struct ComplexRenderingTests {
     }
 
     @Test
+    func primaryAssociatedTypeConstraintInPropertyTypeIsNormalized() {
+        let cleaned = renderingBuilder.cleanedTypeName(
+            "any Mod.CodableBox<Self.Box == Self.Box>.Type",
+            moduleName: "Mod"
+        )
+
+        #expect(cleaned == "any CodableBox<Self.Box>.Type")
+    }
+
+    @Test
+    func protocolPropertyRendersPrimaryAssociatedTypeConstraintAsTypeArgument() {
+        let interface = renderingBuilder.makeInterface(
+            demangledSymbols: [
+                "protocol descriptor for Mod.CodableBoxTag",
+                "protocol conformance descriptor for Mod.CodableBoxTag : Swift.Codable",
+                "associated type descriptor for Mod.CodableBoxTag.Box",
+                "protocol descriptor for Mod.AnyCodableBox",
+                "associated type descriptor for Mod.AnyCodableBox.Tag",
+                "associated conformance descriptor for Mod.AnyCodableBox.Tag: Mod.CodableBoxTag",
+                "method descriptor for Mod.CodableBoxTag.box.getter : any Mod.CodableBox<A.Box == A.Box>.Type",
+            ],
+            targetTriple: "arm64-apple-macosx15.0",
+            moduleName: "Mod",
+            compilerVersion: "Test"
+        )
+
+        let norm = normalizedInterface(interface)
+        #expect(norm.contains("var box: any CodableBox<Self.Box>.Type { get }"))
+        #expect(norm.contains("public protocol AnyCodableBox {"))
+    }
+
+    @Test
     func methodGenericPlaceholderSelfUsesInferredTypeParameter() {
         let interface = renderingBuilder.makeInterface(
             demangledSymbols: [
