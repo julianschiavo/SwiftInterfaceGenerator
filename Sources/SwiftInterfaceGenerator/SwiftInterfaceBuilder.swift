@@ -9,7 +9,7 @@ struct SwiftInterfaceBuilder: Sendable {
     private let renderableExternalModules: Set<String>?
 
     /// An intermediate representation of a discovered type declaration.
-    private struct Declaration: Sendable {
+    struct Declaration: Sendable {
         /// The kind of Swift type declaration.
         enum Kind: Sendable {
             case `protocol`
@@ -242,7 +242,7 @@ struct SwiftInterfaceBuilder: Sendable {
     ///   - moduleName: The module name used to match symbol prefixes.
     /// - Returns: A dictionary keyed by fully-qualified type name, containing the
     ///   discovered ``Declaration`` for each type.
-    private func discoverDeclarations(
+    func discoverDeclarations(
         from demangledSymbols: [String],
         moduleName: String
     ) -> [String: Declaration] {
@@ -533,7 +533,7 @@ struct SwiftInterfaceBuilder: Sendable {
     ///   - moduleName: The module name for the header and type name cleanup.
     ///   - compilerVersion: The compiler version string for the header.
     /// - Returns: The formatted `.swiftinterface` file content.
-    private func renderInterface(
+    func renderInterface(
         declarations: [String: Declaration],
         targetTriple: String,
         moduleName: String,
@@ -588,6 +588,11 @@ struct SwiftInterfaceBuilder: Sendable {
         }
         lines.append("")
 
+        let allowedPrefixes = allowedModulePrefixes(
+            knownTypeComponents: knownTypeComponents,
+            moduleName: moduleName
+        )
+
         for name in topLevelNames {
             lines.append(
                 renderedDeclaration(
@@ -597,6 +602,7 @@ struct SwiftInterfaceBuilder: Sendable {
                     knownTypeComponents: knownTypeComponents,
                     childrenMap: childrenMap,
                     genericArityMap: genericArityMap,
+                    allowedPrefixes: allowedPrefixes,
                     moduleName: moduleName,
                     level: 0
                 )
@@ -630,6 +636,7 @@ struct SwiftInterfaceBuilder: Sendable {
         knownTypeComponents: Set<String>,
         childrenMap: [String: [String]],
         genericArityMap: [String: Int],
+        allowedPrefixes: Set<String>?,
         moduleName: String,
         level: Int
     ) -> String {
@@ -681,6 +688,7 @@ struct SwiftInterfaceBuilder: Sendable {
                     knownTypeComponents: knownTypeComponents,
                     childrenMap: childrenMap,
                     genericArityMap: genericArityMap,
+                    allowedPrefixes: allowedPrefixes,
                     moduleName: moduleName,
                     level: level + 1
                 )
@@ -723,8 +731,7 @@ struct SwiftInterfaceBuilder: Sendable {
             guard
                 !containsUnrenderableExternalModuleReference(
                     property.rawType,
-                    knownTypeComponents: knownTypeComponents,
-                    moduleName: moduleName
+                    allowedPrefixes: allowedPrefixes
                 ),
                 !containsUnresolvedAssociatedTypeReference(property.rawType)
             else {
@@ -745,13 +752,11 @@ struct SwiftInterfaceBuilder: Sendable {
             guard
                 !containsUnrenderableExternalModuleReference(
                     subscriptMember.rawArguments,
-                    knownTypeComponents: knownTypeComponents,
-                    moduleName: moduleName
+                    allowedPrefixes: allowedPrefixes
                 ),
                 !containsUnrenderableExternalModuleReference(
                     subscriptMember.rawReturnType,
-                    knownTypeComponents: knownTypeComponents,
-                    moduleName: moduleName
+                    allowedPrefixes: allowedPrefixes
                 )
             else {
                 continue
@@ -778,7 +783,7 @@ struct SwiftInterfaceBuilder: Sendable {
             if let rendered = renderedCallable(
                 initializer,
                 protocolNames: protocolNames,
-                knownTypeComponents: knownTypeComponents,
+                allowedPrefixes: allowedPrefixes,
                 level: level + 1,
                 isProtocolRequirement: isProtocol,
                 moduleName: moduleName,
@@ -792,7 +797,7 @@ struct SwiftInterfaceBuilder: Sendable {
             if let rendered = renderedCallable(
                 method,
                 protocolNames: protocolNames,
-                knownTypeComponents: knownTypeComponents,
+                allowedPrefixes: allowedPrefixes,
                 level: level + 1,
                 isProtocolRequirement: isProtocol,
                 moduleName: moduleName,
@@ -806,7 +811,7 @@ struct SwiftInterfaceBuilder: Sendable {
             if let rendered = renderedCallable(
                 method,
                 protocolNames: protocolNames,
-                knownTypeComponents: knownTypeComponents,
+                allowedPrefixes: allowedPrefixes,
                 level: level + 1,
                 isProtocolRequirement: isProtocol,
                 moduleName: moduleName,
@@ -845,27 +850,21 @@ struct SwiftInterfaceBuilder: Sendable {
         protocolNames: Set<String>,
         moduleName: String
     ) -> String {
-        let conformances = normalizedConformances(declaration.conformances)
-        guard !conformances.isEmpty else {
-            return ""
-        }
-
-        return ": " + conformances
-            .map { cleanedTypeName($0, moduleName: moduleName) }
-            .joined(separator: ", ")
+        renderedConformanceClause(for: declaration.conformances, moduleName: moduleName)
     }
 
-    /// Renders the conformance clause for an associated type requirement.
-    ///
-    /// - Parameters:
-    ///   - associatedType: The associated type to render.
-    ///   - moduleName: The module name for type name cleanup.
-    /// - Returns: A clause like `": Sendable"`, or an empty string.
     private func renderedAssociatedTypeConformanceClause(
         for associatedType: Declaration.AssociatedType,
         moduleName: String
     ) -> String {
-        let conformances = normalizedConformances(associatedType.conformances)
+        renderedConformanceClause(for: associatedType.conformances, moduleName: moduleName)
+    }
+
+    private func renderedConformanceClause(
+        for rawConformances: [String],
+        moduleName: String
+    ) -> String {
+        let conformances = normalizedConformances(rawConformances)
         guard !conformances.isEmpty else {
             return ""
         }
@@ -915,26 +914,36 @@ struct SwiftInterfaceBuilder: Sendable {
     /// - removes unsupported attribute-related conformances
     /// - folds `Encodable` + `Decodable` into `Codable`
     /// - drops redundant `Equatable` when `Hashable` is present
-    private func normalizedConformances(_ rawConformances: [String]) -> [String] {
-        var conformances = rawConformances
-        let unsupportedConformances: Set<String> = [
-            "Foundation.AttributeScope",
-            "Foundation.AttributedStringKey",
-            "Foundation.DecodableAttributedStringKey",
-            "Foundation.DecodingConfigurationProviding",
-            "Foundation.EncodableAttributedStringKey",
-            "Foundation.EncodingConfigurationProviding",
-        ]
-        conformances.removeAll { unsupportedConformances.contains($0) }
+    private static let unsupportedConformances: Set<String> = [
+        "Foundation.AttributeScope",
+        "Foundation.AttributedStringKey",
+        "Foundation.DecodableAttributedStringKey",
+        "Foundation.DecodingConfigurationProviding",
+        "Foundation.EncodableAttributedStringKey",
+        "Foundation.EncodingConfigurationProviding",
+    ]
 
-        if conformances.contains("Swift.Encodable"), conformances.contains("Swift.Decodable") {
+    private func normalizedConformances(_ rawConformances: [String]) -> [String] {
+        var hasEncodable = false
+        var hasDecodable = false
+        var hasHashable = false
+
+        var conformances = rawConformances.filter { conformance in
+            if Self.unsupportedConformances.contains(conformance) { return false }
+            if conformance == "Swift.Encodable" { hasEncodable = true }
+            if conformance == "Swift.Decodable" { hasDecodable = true }
+            if conformance == "Swift.Hashable" { hasHashable = true }
+            return true
+        }
+
+        if hasEncodable, hasDecodable {
             conformances.removeAll { $0 == "Swift.Encodable" || $0 == "Swift.Decodable" }
             if !conformances.contains("Swift.Codable") {
                 conformances.insert("Swift.Codable", at: 0)
             }
         }
 
-        if conformances.contains("Swift.Hashable"), conformances.contains("Swift.Equatable") {
+        if hasHashable {
             conformances.removeAll { $0 == "Swift.Equatable" }
         }
 
@@ -1035,21 +1044,19 @@ struct SwiftInterfaceBuilder: Sendable {
         return tokens
     }
 
-    /// Discovers which external modules are referenced in the demangled symbols.
+    /// Discovers which external modules are referenced in the given declarations.
     ///
-    /// Builds intermediate declarations from the symbols, then scans all conformances,
-    /// property types, method signatures, and enum payloads for references to external
-    /// modules (Foundation, CoreGraphics, Dispatch, etc.).
+    /// Scans all conformances, property types, method signatures, and enum payloads
+    /// for references to external modules (Foundation, CoreGraphics, Dispatch, etc.).
     ///
     /// - Parameters:
-    ///   - demangledSymbols: The demangled symbol lines to scan.
+    ///   - declarations: The pre-computed declarations to scan.
     ///   - moduleName: The module name used to match symbol prefixes.
     /// - Returns: An ordered array of external module names referenced by the symbols.
     func discoveredExternalModules(
-        from demangledSymbols: [String],
+        from declarations: [String: Declaration],
         moduleName: String
     ) -> [String] {
-        let declarations = discoverDeclarations(from: demangledSymbols, moduleName: moduleName)
         let knownTypeComponents = Set(
             declarations.keys.flatMap { $0.split(separator: ".").map(String.init) }
         )
@@ -1125,7 +1132,7 @@ struct SwiftInterfaceBuilder: Sendable {
     private func renderedCallable(
         _ callable: Declaration.Callable,
         protocolNames: Set<String>,
-        knownTypeComponents: Set<String>,
+        allowedPrefixes: Set<String>?,
         level: Int,
         isProtocolRequirement: Bool,
         moduleName: String,
@@ -1138,8 +1145,7 @@ struct SwiftInterfaceBuilder: Sendable {
             !rawSignature.contains("CoreGraphics.Region"),
             !containsUnrenderableExternalModuleReference(
                 rawSignature,
-                knownTypeComponents: knownTypeComponents,
-                moduleName: moduleName
+                allowedPrefixes: allowedPrefixes
             )
         else {
             return nil
@@ -2372,18 +2378,25 @@ struct SwiftInterfaceBuilder: Sendable {
         string.contains(/\b[A-Z][0-9]*\.[A-Z][A-Za-z0-9_]*\b/)
     }
 
-    private func containsUnrenderableExternalModuleReference(
-        _ string: String,
+    private func allowedModulePrefixes(
         knownTypeComponents: Set<String>,
         moduleName: String
-    ) -> Bool {
+    ) -> Set<String>? {
         guard let renderableExternalModules else {
-            return false
+            return nil
         }
-
-        let allowedPrefixes = knownTypeComponents
+        return knownTypeComponents
             .union(renderableExternalModules)
             .union(["Swift", "__C", moduleName])
+    }
+
+    private func containsUnrenderableExternalModuleReference(
+        _ string: String,
+        allowedPrefixes: Set<String>?
+    ) -> Bool {
+        guard let allowedPrefixes else {
+            return false
+        }
 
         return moduleLikePrefixes(in: string).contains { prefix in
             !allowedPrefixes.contains(prefix)

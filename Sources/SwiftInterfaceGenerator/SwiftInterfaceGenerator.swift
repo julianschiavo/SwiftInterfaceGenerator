@@ -107,14 +107,15 @@ public struct SwiftInterfaceGenerator: Sendable {
         async let compilerVersionTask = loadCompilerVersion()
         let demangledSymbols = try await demangledSymbolsTask
         let compilerVersion = try await compilerVersionTask
+        let declarations = utilityBuilder.discoverDeclarations(from: demangledSymbols, moduleName: moduleName)
         let renderableExternalModules = try await loadRenderableExternalModules(
-            demangledSymbols: demangledSymbols,
+            declarations: declarations,
             moduleName: moduleName,
             targetTriple: targetTriple
         )
         let renderingBuilder = SwiftInterfaceBuilder(renderableExternalModules: renderableExternalModules)
-        let interface = renderingBuilder.makeInterface(
-            demangledSymbols: demangledSymbols,
+        let interface = renderingBuilder.renderInterface(
+            declarations: declarations,
             targetTriple: targetTriple,
             moduleName: moduleName,
             compilerVersion: compilerVersion
@@ -216,12 +217,12 @@ public struct SwiftInterfaceGenerator: Sendable {
     }
 
     private func loadRenderableExternalModules(
-        demangledSymbols: [String],
+        declarations: [String: SwiftInterfaceBuilder.Declaration],
         moduleName: String,
         targetTriple: String
     ) async throws -> Set<String> {
         let candidateModules = utilityBuilder.discoveredExternalModules(
-            from: demangledSymbols,
+            from: declarations,
             moduleName: moduleName
         )
 
