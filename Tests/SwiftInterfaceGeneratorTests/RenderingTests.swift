@@ -162,6 +162,43 @@ struct MakeInterfaceTests {
     }
 
     @Test
+    func protocolAssociatedTypesDoNotRenderAsNestedNominalTypes() {
+        let interface = renderingBuilder.makeInterface(
+            demangledSymbols: [
+                "protocol descriptor for Mod.VectorArithmetic",
+                "protocol descriptor for Mod.Animatable",
+                "associated type descriptor for Mod.Animatable.AnimatableData",
+                "associated conformance descriptor for Mod.Animatable.Mod.Animatable.AnimatableData: Mod.VectorArithmetic",
+                "nominal type descriptor for Mod.Animatable.AnimatableData",
+                "method descriptor for Mod.Animatable.animatableData.getter : A.AnimatableData",
+            ],
+            targetTriple: "arm64-apple-macosx15.0",
+            moduleName: "Mod",
+            compilerVersion: "Test"
+        )
+
+        #expect(
+            normalizedInterface(interface)
+                == normalizedInterface(
+                    """
+                // swift-interface-format-version: 1.0
+                // swift-compiler-version: Test
+                // swift-module-flags: -target arm64-apple-macosx15.0 -enable-library-evolution -module-name Mod
+                import Swift
+
+                public protocol VectorArithmetic {
+                }
+
+                public protocol Animatable {
+                  associatedtype AnimatableData: VectorArithmetic
+                  var animatableData: Self.AnimatableData { get }
+                }
+                """
+                )
+        )
+    }
+
+    @Test
     func protocolInheritanceFromBaseConformanceDescriptors() {
         let interface = renderingBuilder.makeInterface(
             demangledSymbols: [

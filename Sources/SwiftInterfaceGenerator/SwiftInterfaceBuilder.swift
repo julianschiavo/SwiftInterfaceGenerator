@@ -716,7 +716,7 @@ struct SwiftInterfaceBuilder: Sendable {
         }
 
         let indent = String(repeating: "  ", count: level)
-        let childNames = childrenMap[fullName] ?? []
+        let childNames = declaration.resolvedKind == .protocol ? [] : (childrenMap[fullName] ?? [])
         let genericParameters = inferredGenericParameters(
             for: declaration,
             declarations: declarations,
@@ -811,7 +811,7 @@ struct SwiftInterfaceBuilder: Sendable {
                     property.rawType,
                     allowedPrefixes: allowedPrefixes
                 ),
-                !containsUnresolvedAssociatedTypeReference(property.rawType)
+                declaration.resolvedKind == .protocol || !containsUnresolvedAssociatedTypeReference(property.rawType)
             else {
                 continue
             }
