@@ -1568,9 +1568,50 @@ struct SwiftInterfaceBuilder: Sendable {
                 cleaned = cleaned.replacingOccurrences(of: from, with: to)
             }
         }
-        return replacingDemanglerPackSyntax(in: cleaned)
+        return removingRedundantExtensionConstraintClauses(in: replacingDemanglerPackSyntax(in: cleaned))
             .replacingADotPattern()
             .replacingProtocolKeyword()
+    }
+
+    private func removingRedundantExtensionConstraintClauses(in string: String) -> String {
+        guard string.contains("><") else {
+            return string
+        }
+
+        var result = ""
+        result.reserveCapacity(string.count)
+
+        var index = string.startIndex
+        while index < string.endIndex {
+            let character = string[index]
+            result.append(character)
+
+            guard
+                character == ">",
+                let nextIndex = string.index(index, offsetBy: 1, limitedBy: string.endIndex),
+                nextIndex < string.endIndex,
+                string[nextIndex] == "<",
+                let clauseEnd = matchingClosingDelimiter(
+                    in: string,
+                    from: nextIndex,
+                    open: "<",
+                    close: ">"
+                )
+            else {
+                index = string.index(after: index)
+                continue
+            }
+
+            let clauseContents = String(string[string.index(after: nextIndex)..<clauseEnd])
+            if clauseContents.contains(" where ") {
+                index = string.index(after: clauseEnd)
+                continue
+            }
+
+            index = string.index(after: index)
+        }
+
+        return result
     }
 
     private func replacingDemanglerPackSyntax(in string: String) -> String {

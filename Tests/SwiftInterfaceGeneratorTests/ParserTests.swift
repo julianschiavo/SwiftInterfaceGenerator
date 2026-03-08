@@ -917,6 +917,16 @@ struct CleanedTypeNameTests {
     }
 
     @Test
+    func removesRedundantExtensionConstraintClauseAfterConcreteGenericArguments() {
+        #expect(
+            builder.cleanedTypeName(
+                "(extension in Sample):Sample.Store<Swift.Int><A where A == Swift.Int>.Node",
+                moduleName: "Sample"
+            ) == "Store<Swift.Int>.Node"
+        )
+    }
+
+    @Test
     func combinedReplacements() {
         #expect(
             builder.cleanedTypeName("__owned Sample.Record", moduleName: "Sample") == "Record"
