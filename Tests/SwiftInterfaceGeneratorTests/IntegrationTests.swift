@@ -1814,6 +1814,47 @@ struct IntegrationTests {
     }
 
     @Test
+    func externalNeverConformanceRendersAsExtension() async throws {
+        let fixture = try integrationCompiler.compileFramework(
+            moduleName: "NeverConformanceFixture",
+            sources: [
+                "NeverConformanceFixture.swift": """
+                public protocol View {
+                    associatedtype Body: View
+                    var body: Body { get }
+                }
+
+                extension Never: View {
+                    public var body: Never {
+                        fatalError()
+                    }
+                }
+
+                public protocol PrimitiveView: View {}
+
+                public extension PrimitiveView {
+                    var body: Never {
+                        fatalError()
+                    }
+                }
+
+                public struct Leaf: PrimitiveView {
+                    public init() {}
+                }
+                """
+            ]
+        )
+        let contents = try await generateInterface(fixture: fixture)
+        let normalized = normalizedInterface(contents)
+
+        #expect(normalized.contains("public protocol View {"))
+        #expect(normalized.contains("associatedtype Body: View"))
+        #expect(normalized.contains("extension Swift.Never: View {"))
+        #expect(normalized.contains("public var body: Swift.Never { get }"))
+        #expect(normalized.contains("public struct Leaf: PrimitiveView"))
+    }
+
+    @Test
     func constrainedExtensionSubscriptStaysOnGenericOwner() async throws {
         let fixture = try integrationCompiler.compileFramework(
             moduleName: "ConstrainedSubscriptFixture",

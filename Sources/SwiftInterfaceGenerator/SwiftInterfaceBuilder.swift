@@ -64,6 +64,7 @@ struct SwiftInterfaceBuilder: Sendable {
 
         let fullName: String
         let order: Int
+        var isExternalExtension = false
         var isProtocol = false
         var isClass = false
         var isOpen = false
@@ -346,7 +347,14 @@ struct SwiftInterfaceBuilder: Sendable {
                 extractedTypeName(from: $0, prefix: nominalTypePrefix, moduleName: moduleName)
             }
         )
-        let extensionMemberOwners = concreteTypeNames.union(protocolTypeNames)
+        let externalExtensionOwnerNames = Set(
+            demangledSymbols.compactMap {
+                sameModuleExtensionOwnerName(from: $0, moduleName: moduleName)
+            }
+        )
+        let extensionMemberOwners = concreteTypeNames
+            .union(protocolTypeNames)
+            .union(externalExtensionOwnerNames)
 
         func declaration(named fullName: String, order: Int) -> Declaration {
             declarations[fullName] ?? Declaration(fullName: fullName, order: order)
@@ -427,6 +435,17 @@ struct SwiftInterfaceBuilder: Sendable {
                 continue
             }
 
+            if let (owner, conformance) = parseExternalConformanceDescriptor(
+                from: line,
+                moduleName: moduleName
+            ) {
+                var value = declaration(named: owner, order: order)
+                value.isExternalExtension = true
+                value.addConformance(conformance)
+                setDeclaration(value)
+                continue
+            }
+
             if let (owner, conformance) = parseBaseConformanceDescriptor(from: line, moduleName: moduleName) {
                 var value = declaration(named: owner, order: order)
                 value.addConformance(conformance)
@@ -441,6 +460,10 @@ struct SwiftInterfaceBuilder: Sendable {
                 allowExtensionMembersOn: extensionMemberOwners
             ) {
                 var value = declaration(named: subscriptMember.owner, order: order)
+                if !concreteTypeNames.contains(subscriptMember.owner),
+                   !protocolTypeNames.contains(subscriptMember.owner) {
+                    value.isExternalExtension = true
+                }
                 let subscriptDeclaration = Declaration.Subscript(
                     rawArguments: subscriptMember.rawArguments,
                     rawReturnType: subscriptMember.rawReturnType,
@@ -472,6 +495,10 @@ struct SwiftInterfaceBuilder: Sendable {
                 allowExtensionMembersOn: extensionMemberOwners
             ) {
                 var value = declaration(named: property.owner, order: order)
+                if !concreteTypeNames.contains(property.owner),
+                   !protocolTypeNames.contains(property.owner) {
+                    value.isExternalExtension = true
+                }
                 let propertyDeclaration = Declaration.Property(
                     name: property.name,
                     rawType: property.rawType,
@@ -564,6 +591,10 @@ struct SwiftInterfaceBuilder: Sendable {
                 allowExtensionMembersOn: extensionMemberOwners
             ) {
                 var value = declaration(named: callable.owner, order: order)
+                if !concreteTypeNames.contains(callable.owner),
+                   !protocolTypeNames.contains(callable.owner) {
+                    value.isExternalExtension = true
+                }
                 let isProtocolExtensionMember = isSameModuleExtensionMember(
                     line,
                     memberPrefix: "static ",
@@ -605,6 +636,10 @@ struct SwiftInterfaceBuilder: Sendable {
                 allowExtensionMembersOn: extensionMemberOwners
             ) {
                 var value = declaration(named: callable.owner, order: order)
+                if !concreteTypeNames.contains(callable.owner),
+                   !protocolTypeNames.contains(callable.owner) {
+                    value.isExternalExtension = true
+                }
                 let isProtocolExtensionMember = isSameModuleExtensionMember(
                     line,
                     memberPrefix: "",
@@ -786,7 +821,10 @@ struct SwiftInterfaceBuilder: Sendable {
         let genericArityMap = precomputedGenericArities(declarations: declarations, moduleName: moduleName)
 
         let topLevelNames = declarations.keys
-            .filter { parentName(of: $0, in: declarations) == nil }
+            .filter {
+                parentName(of: $0, in: declarations) == nil
+                    && declarations[$0]?.isExternalExtension != true
+            }
             .sorted {
                 declarations[$0, default: Declaration(fullName: $0, order: .max)].order
                     < declarations[$1, default: Declaration(fullName: $1, order: .max)].order
@@ -827,6 +865,17 @@ struct SwiftInterfaceBuilder: Sendable {
                     level: 0
                 )
             )
+            lines.append("")
+        }
+
+        for block in renderedExternalExtensionBlocks(
+            declarations: declarations,
+            protocolNames: protocolNames,
+            knownTypeComponents: knownTypeComponents,
+            allowedPrefixes: allowedPrefixes,
+            moduleName: moduleName
+        ) {
+            lines.append(block)
             lines.append("")
         }
 
@@ -1090,6 +1139,173 @@ struct SwiftInterfaceBuilder: Sendable {
         }
 
         return ([header] + body + ["\(indent)}"]).joined(separator: "\n")
+    }
+
+    private func renderedExternalExtensionBlocks(
+        declarations: [String: Declaration],
+        protocolNames: Set<String>,
+        knownTypeComponents: Set<String>,
+        allowedPrefixes: Set<String>?,
+        moduleName: String
+    ) -> [String] {
+        declarations.values
+            .filter {
+                $0.isExternalExtension
+                    && (
+                        !$0.conformances.isEmpty
+                            || !$0.properties.isEmpty
+                            || !$0.subscripts.isEmpty
+                            || !$0.initializers.isEmpty
+                            || !$0.methods.isEmpty
+                            || !$0.staticMethods.isEmpty
+                    )
+            }
+            .sorted(by: { $0.order < $1.order })
+            .compactMap {
+                renderedExternalExtensionBlock(
+                    for: $0,
+                    declarations: declarations,
+                    protocolNames: protocolNames,
+                    knownTypeComponents: knownTypeComponents,
+                    allowedPrefixes: allowedPrefixes,
+                    moduleName: moduleName
+                )
+            }
+    }
+
+    private func renderedExternalExtensionBlock(
+        for declaration: Declaration,
+        declarations: [String: Declaration],
+        protocolNames: Set<String>,
+        knownTypeComponents: Set<String>,
+        allowedPrefixes: Set<String>?,
+        moduleName: String
+    ) -> String? {
+        let ownerName = renderedQualifiedDeclarationName(declaration.fullName, moduleName: moduleName)
+        let conformanceClause = renderedConformanceClause(
+            for: declaration,
+            allowedPrefixes: allowedPrefixes,
+            moduleName: moduleName
+        )
+
+        var body: [String] = []
+
+        for property in declaration.properties.sorted(by: { $0.order < $1.order }) {
+            guard
+                !containsUnrenderableExternalModuleReference(
+                    property.rawType,
+                    allowedPrefixes: allowedPrefixes
+                )
+            else {
+                continue
+            }
+            let rawType = resolvedOpaquePropertyType(
+                property,
+                in: declaration,
+                declarations: declarations,
+                moduleName: moduleName
+            ) ?? property.rawType
+            guard cleanedTypeName(rawType, moduleName: moduleName) != "some" else {
+                continue
+            }
+            let renderedType = renderedTypeName(
+                rawType,
+                protocolNames: protocolNames,
+                moduleName: moduleName
+            )
+            let accessors = property.hasSetter ? "{ get set }" : "{ get }"
+            body.append(
+                "  public \(property.isStatic ? "static " : "")var \(escapedIdentifier(property.name)): \(renderedType) \(accessors)"
+            )
+        }
+
+        for subscriptMember in declaration.subscripts.sorted(by: { $0.order < $1.order }) {
+            guard
+                !containsUnrenderableExternalModuleReference(
+                    subscriptMember.rawArguments,
+                    allowedPrefixes: allowedPrefixes
+                ),
+                !containsUnrenderableExternalModuleReference(
+                    subscriptMember.rawReturnType,
+                    allowedPrefixes: allowedPrefixes
+                )
+            else {
+                continue
+            }
+            let renderedArguments = (try? renderedArgumentList(
+                subscriptMember.rawArguments,
+                protocolNames: protocolNames,
+                moduleName: moduleName
+            )) ?? subscriptMember.rawArguments
+            let renderedReturnType = renderedTypeName(
+                subscriptMember.rawReturnType,
+                protocolNames: protocolNames,
+                moduleName: moduleName
+            )
+            let accessors = subscriptMember.hasSetter ? "{ get set }" : "{ get }"
+            body.append(
+                "  public subscript(\(renderedArguments)) -> \(renderedReturnType) \(accessors)"
+            )
+        }
+
+        for initializer in declaration.initializers.sorted(by: { $0.order < $1.order }) {
+            if let rendered = renderedCallable(
+                initializer,
+                protocolNames: protocolNames,
+                allowedPrefixes: allowedPrefixes,
+                level: 1,
+                isProtocolRequirement: false,
+                knownTypeComponents: knownTypeComponents,
+                moduleName: moduleName,
+                ownerDeclaration: declaration,
+                declarations: declarations,
+                forcePublicAccess: true
+            ) {
+                body.append(rendered)
+            }
+        }
+
+        for method in declaration.methods.sorted(by: { $0.order < $1.order }) {
+            if let rendered = renderedCallable(
+                method,
+                protocolNames: protocolNames,
+                allowedPrefixes: allowedPrefixes,
+                level: 1,
+                isProtocolRequirement: false,
+                knownTypeComponents: knownTypeComponents,
+                moduleName: moduleName,
+                ownerDeclaration: declaration,
+                declarations: declarations,
+                forcePublicAccess: true
+            ) {
+                body.append(rendered)
+            }
+        }
+
+        for method in declaration.staticMethods.sorted(by: { $0.order < $1.order }) {
+            if let rendered = renderedCallable(
+                method,
+                protocolNames: protocolNames,
+                allowedPrefixes: allowedPrefixes,
+                level: 1,
+                isProtocolRequirement: false,
+                knownTypeComponents: knownTypeComponents,
+                moduleName: moduleName,
+                ownerDeclaration: declaration,
+                declarations: declarations,
+                forcePublicAccess: true
+            ) {
+                body.append(rendered)
+            }
+        }
+
+        guard !body.isEmpty || !conformanceClause.isEmpty else {
+            return nil
+        }
+
+        return (["extension \(ownerName)\(conformanceClause) {"] + body + ["}"]).joined(
+            separator: "\n"
+        )
     }
 
     private func renderedProtocolExtensionBlocks(
@@ -1560,6 +1776,9 @@ struct SwiftInterfaceBuilder: Sendable {
     ) -> [String] {
         var rawFragments: [String] = []
         for declaration in declarations.values.sorted(by: { $0.order < $1.order }) {
+            if declaration.isExternalExtension {
+                rawFragments.append(declaration.fullName)
+            }
             rawFragments.append(contentsOf: declaration.conformances)
             rawFragments.append(contentsOf: declaration.rawTypeFragments)
         }
@@ -2687,6 +2906,30 @@ struct SwiftInterfaceBuilder: Sendable {
         return (owner, conformance)
     }
 
+    func parseExternalConformanceDescriptor(
+        from line: String,
+        moduleName: String
+    ) -> (owner: String, conformance: String)? {
+        let prefix = "protocol conformance descriptor for "
+        let suffix = " in \(moduleName)"
+        guard line.hasPrefix(prefix), line.hasSuffix(suffix) else {
+            return nil
+        }
+
+        let remainder = String(line.dropFirst(prefix.count).dropLast(suffix.count))
+        guard let conformanceSeparator = remainder.range(of: " : ") else {
+            return nil
+        }
+
+        let owner = removingGenericArguments(from: String(remainder[..<conformanceSeparator.lowerBound]))
+        let conformance = String(remainder[conformanceSeparator.upperBound...])
+        guard !owner.hasPrefix("\(moduleName).") else {
+            return nil
+        }
+
+        return (owner, conformance)
+    }
+
     /// Parses a protocol base conformance descriptor symbol line.
     ///
     /// Matches lines like `"base conformance descriptor for Module.Protocol: Swift.Sendable"`
@@ -2814,7 +3057,7 @@ struct SwiftInterfaceBuilder: Sendable {
         }
 
         guard
-            remainder.hasPrefix("\(moduleName)."),
+            (isExtensionMember || remainder.hasPrefix("\(moduleName).")),
             let typeSeparator = remainder.range(of: " : ")
         else {
             return nil
@@ -2822,7 +3065,12 @@ struct SwiftInterfaceBuilder: Sendable {
 
         let path = String(remainder[..<typeSeparator.lowerBound])
         let rawType = String(remainder[typeSeparator.upperBound...])
-        guard let member = parseOwnerMemberPath(path, moduleName: moduleName) else {
+        let member = isExtensionMember
+            ? parseAnyOwnerMemberPath(path, moduleName: moduleName)
+            : parseOwnerMemberPath(path, moduleName: moduleName).map {
+                (owner: $0.owner, name: $0.name, symbolOwner: $0.owner, isLocalOwner: true)
+            }
+        guard let member else {
             return nil
         }
         let resolvedOwner = removingGenericArguments(from: member.owner)
@@ -2831,9 +3079,11 @@ struct SwiftInterfaceBuilder: Sendable {
         }
 
         let staticPrefix = isStatic ? "static " : ""
-        let memberPrefix = isExtensionMember ? "\(extensionPrefix)\(moduleName)." : "\(moduleName)."
-        let getterPrefix = "\(staticPrefix)\(memberPrefix)\(member.owner).\(member.name).getter : "
-        let setterPrefix = "\(staticPrefix)\(memberPrefix)\(member.owner).\(member.name).setter : "
+        let memberPrefix = isExtensionMember
+            ? (member.isLocalOwner ? "\(extensionPrefix)\(moduleName)." : extensionPrefix)
+            : "\(moduleName)."
+        let getterPrefix = "\(staticPrefix)\(memberPrefix)\(member.symbolOwner).\(member.name).getter : "
+        let setterPrefix = "\(staticPrefix)\(memberPrefix)\(member.symbolOwner).\(member.name).setter : "
         let dispatchSetterPrefix = "dispatch thunk of \(moduleName).\(member.owner).\(member.name).setter : "
 
         let hasGetter = sortedSymbols.containsPrefix(getterPrefix)
@@ -2881,10 +3131,13 @@ struct SwiftInterfaceBuilder: Sendable {
         }
 
         let modulePrefix = "\(moduleName)."
-        guard remainder.hasPrefix(modulePrefix) else {
-            return nil
+        let isLocalOwner = remainder.hasPrefix(modulePrefix)
+        if !isExtensionMember || isLocalOwner {
+            guard remainder.hasPrefix(modulePrefix) else {
+                return nil
+            }
+            remainder.removeFirst(modulePrefix.count)
         }
-        remainder.removeFirst(modulePrefix.count)
         guard let subscriptRange = remainder.range(of: ".subscript(") else {
             return nil
         }
@@ -2910,7 +3163,9 @@ struct SwiftInterfaceBuilder: Sendable {
         let rawArguments = String(remainder[subscriptRange.upperBound..<closingParenthesis])
         let rawReturnType = String(remainder[returnArrow.upperBound...])
 
-        let memberPrefix = isExtensionMember ? "\(extensionPrefix)\(moduleName)." : modulePrefix
+        let memberPrefix = isExtensionMember
+            ? (isLocalOwner ? "\(extensionPrefix)\(moduleName)." : extensionPrefix)
+            : modulePrefix
         let getterPrefix = "\(memberPrefix)\(owner).subscript.getter : "
         let setterPrefix = "\(memberPrefix)\(owner).subscript.setter : "
         let dispatchSetterPrefix = "dispatch thunk of \(moduleName).\(owner).subscript.setter : "
@@ -3121,10 +3376,13 @@ struct SwiftInterfaceBuilder: Sendable {
         }
 
         let modulePrefix = "\(moduleName)."
-        guard remainder.hasPrefix(modulePrefix) else {
-            return nil
+        let isLocalOwner = remainder.hasPrefix(modulePrefix)
+        if !isExtensionMember || isLocalOwner {
+            guard remainder.hasPrefix(modulePrefix) else {
+                return nil
+            }
+            remainder.removeFirst(modulePrefix.count)
         }
-        remainder.removeFirst(modulePrefix.count)
         guard
             !containsAccessorLikeSymbol(remainder),
             !remainder.contains(".__deallocating_deinit"),
@@ -3147,7 +3405,7 @@ struct SwiftInterfaceBuilder: Sendable {
             rawSignature = "init" + rawSignature.dropFirst("__allocating_init".count)
         }
 
-        let extensionConstraintClause = isExtensionMember
+        let extensionConstraintClause = isExtensionMember && isLocalOwner
             ? cleanedExtensionConstraintClause(from: ownerPath, moduleName: moduleName)
             : ""
         rawSignature += extensionConstraintClause
@@ -3224,6 +3482,77 @@ struct SwiftInterfaceBuilder: Sendable {
             owner: String(stripped[..<separator]),
             name: String(stripped[stripped.index(after: separator)...])
         )
+    }
+
+    private func parseAnyOwnerMemberPath(
+        _ qualifiedPath: String,
+        moduleName: String
+    ) -> (owner: String, name: String, symbolOwner: String, isLocalOwner: Bool)? {
+        if let localMember = parseOwnerMemberPath(qualifiedPath, moduleName: moduleName) {
+            return (
+                owner: localMember.owner,
+                name: localMember.name,
+                symbolOwner: localMember.owner,
+                isLocalOwner: true
+            )
+        }
+
+        guard let separator = memberDotIndex(in: qualifiedPath, before: qualifiedPath.endIndex) else {
+            return nil
+        }
+
+        let owner = String(qualifiedPath[..<separator])
+        return (
+            owner: owner,
+            name: String(qualifiedPath[qualifiedPath.index(after: separator)...]),
+            symbolOwner: owner,
+            isLocalOwner: false
+        )
+    }
+
+    private func sameModuleExtensionOwnerName(
+        from line: String,
+        moduleName: String
+    ) -> String? {
+        let extensionPrefix = "(extension in \(moduleName)):"
+        guard let prefixRange = line.range(of: extensionPrefix) else {
+            return nil
+        }
+
+        let remainder = String(line[prefixRange.upperBound...])
+        let ownerPath: String
+
+        if let subscriptRange = remainder.range(of: ".subscript(") {
+            ownerPath = String(remainder[..<subscriptRange.lowerBound])
+        } else if let accessorRange = remainder.range(of: ".getter : ")
+            ?? remainder.range(of: ".setter : ")
+            ?? remainder.range(of: ".modify : ")
+            ?? remainder.range(of: ".read : ")
+        {
+            let path = String(remainder[..<accessorRange.lowerBound])
+            guard let separator = memberDotIndex(in: path, before: path.endIndex) else {
+                return nil
+            }
+            ownerPath = String(path[..<separator])
+        } else if let typeSeparator = remainder.range(of: " : ") {
+            let path = String(remainder[..<typeSeparator.lowerBound])
+            guard let separator = memberDotIndex(in: path, before: path.endIndex) else {
+                return nil
+            }
+            ownerPath = String(path[..<separator])
+        } else if let openingParenthesis = remainder.firstIndex(of: "("),
+                  let separator = memberDotIndex(in: remainder, before: openingParenthesis) {
+            ownerPath = String(remainder[..<separator])
+        } else {
+            return nil
+        }
+
+        let localPrefix = "\(moduleName)."
+        let normalizedOwner = ownerPath.hasPrefix(localPrefix)
+            ? String(ownerPath.dropFirst(localPrefix.count))
+            : ownerPath
+
+        return removingGenericArguments(from: normalizedOwner)
     }
 
     private func isSameModuleExtensionMember(
