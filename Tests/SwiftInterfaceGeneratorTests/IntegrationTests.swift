@@ -1836,6 +1836,75 @@ struct IntegrationTests {
     }
 
     @Test
+    func concreteStaticMethodWitnessMaterializesAssociatedTypealias() async throws {
+        let fixture = try integrationCompiler.compileFramework(
+            moduleName: "ConcreteWitnessAssociatedTypeFixture",
+            sources: [
+                "ConcreteWitnessAssociatedTypeFixture.swift": """
+                public struct _GestureOutputs<Value> {
+                    public init() {}
+                }
+
+                public struct _GraphValue<Value> {
+                    public init() {}
+                }
+
+                public struct _GestureInputs {
+                    public init() {}
+                }
+
+                public protocol Gesture {
+                    associatedtype Body: Gesture
+                    associatedtype Value
+                    var body: Body { get }
+                    static func _makeGesture(
+                        gesture: _GraphValue<Self>,
+                        inputs: _GestureInputs
+                    ) -> _GestureOutputs<Self.Value>
+                }
+
+                public struct EmptyGesture: Gesture {
+                    public typealias Body = EmptyGesture
+                    public typealias Value = Never
+                    public var body: EmptyGesture { self }
+
+                    public init() {}
+
+                    public static func _makeGesture(
+                        gesture: _GraphValue<EmptyGesture>,
+                        inputs: _GestureInputs
+                    ) -> _GestureOutputs<Never> {
+                        .init()
+                    }
+                }
+
+                public struct TapGesture: Gesture {
+                    public typealias Body = EmptyGesture
+                    public var body: EmptyGesture { EmptyGesture() }
+
+                    public init() {}
+
+                    public static func _makeGesture(
+                        gesture: _GraphValue<TapGesture>,
+                        inputs: _GestureInputs
+                    ) -> _GestureOutputs<Void> {
+                        .init()
+                    }
+                }
+                """
+            ]
+        )
+        let contents = try await generateInterface(fixture: fixture)
+        let normalized = normalizedInterface(contents)
+
+        #expect(normalized.contains("public struct TapGesture: Gesture {"))
+        #expect(
+            normalized.contains("public typealias Value = ()")
+                || normalized.contains("public typealias Value = Swift.Void")
+        )
+    }
+
+    @Test
     func protocolExtensionOpaquePropertyPreservesConstraint() async throws {
         let fixture = try integrationCompiler.compileFramework(
             moduleName: "ProtocolExtensionOpaqueFixture",

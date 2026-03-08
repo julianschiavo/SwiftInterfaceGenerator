@@ -1794,6 +1794,25 @@ struct SwiftInterfaceBuilder: Sendable {
             }
         }
 
+        let witnessCallables =
+            declaration.methods
+            + declaration.staticMethods
+            + declaration.extensionMethods
+            + declaration.extensionStaticMethods
+
+        for callable in witnessCallables {
+            for (associatedTypeName, rawType) in associatedTypeAliasesSatisfied(
+                by: callable,
+                across: conformedProtocols,
+                moduleName: moduleName
+            ) {
+                guard seenAliasNames.insert(associatedTypeName).inserted else {
+                    continue
+                }
+                aliases.append((associatedTypeName, rawType))
+            }
+        }
+
         return aliases
     }
 
@@ -1906,6 +1925,454 @@ struct SwiftInterfaceBuilder: Sendable {
     ) -> Bool {
         cleanedTypeName(rawType, moduleName: moduleName)
             .contains(/\b(?:Self|[A-Z][0-9]*)\.[A-Z][A-Za-z0-9_]*\b/)
+    }
+
+    private func associatedTypeAliasesSatisfied(
+        by callable: Declaration.Callable,
+        across protocolDeclarations: [Declaration],
+        moduleName: String
+    ) -> [(name: String, rawType: String)] {
+        guard let requirementKey = callableRequirementKey(
+            for: callable.rawSignature,
+            isStatic: callable.isStatic,
+            moduleName: moduleName
+        ) else {
+            return []
+        }
+
+        var bindings: [String: String] = [:]
+
+        for protocolDeclaration in protocolDeclarations {
+            let requirements = callable.isStatic
+                ? protocolDeclaration.staticMethods
+                : protocolDeclaration.methods
+            let associatedTypeNames = Set(protocolDeclaration.associatedTypes.map(\.name))
+            guard !associatedTypeNames.isEmpty else {
+                continue
+            }
+
+            for requirement in requirements {
+                guard callableRequirementKey(
+                    for: requirement.rawSignature,
+                    isStatic: callable.isStatic,
+                    moduleName: moduleName
+                ) == requirementKey,
+                let inferredBindings = associatedTypeWitnessBindings(
+                    fromRequirementSignature: requirement.rawSignature,
+                    toWitnessSignature: callable.rawSignature,
+                    associatedTypeNames: associatedTypeNames,
+                    moduleName: moduleName
+                ),
+                let mergedBindings = mergingAssociatedTypeBindings(
+                    bindings,
+                    with: inferredBindings
+                ) else {
+                    continue
+                }
+
+                bindings = mergedBindings
+            }
+        }
+
+        return bindings.keys.sorted().compactMap { name in
+            guard let rawType = bindings[name] else {
+                return nil
+            }
+            return (name, rawType)
+        }
+    }
+
+    private func associatedTypeWitnessBindings(
+        fromRequirementSignature requirementSignature: String,
+        toWitnessSignature witnessSignature: String,
+        associatedTypeNames: Set<String>,
+        moduleName: String
+    ) -> [String: String]? {
+        guard
+            let requirementComponents = parsedCallableSignatureComponents(from: requirementSignature),
+            let witnessComponents = parsedCallableSignatureComponents(from: witnessSignature),
+            let requirementArguments = callableArgumentTypes(
+                from: requirementComponents.arguments,
+                moduleName: moduleName
+            ),
+            let witnessArguments = callableArgumentTypes(
+                from: witnessComponents.arguments,
+                moduleName: moduleName
+            ),
+            requirementArguments.count == witnessArguments.count
+        else {
+            return nil
+        }
+
+        var bindings: [String: String] = [:]
+
+        for (requirementArgument, witnessArgument) in zip(requirementArguments, witnessArguments) {
+            guard let argumentBindings = associatedTypeWitnessBindings(
+                fromRequirementType: requirementArgument,
+                toWitnessType: witnessArgument,
+                associatedTypeNames: associatedTypeNames,
+                moduleName: moduleName
+            ),
+            let mergedBindings = mergingAssociatedTypeBindings(bindings, with: argumentBindings) else {
+                return nil
+            }
+            bindings = mergedBindings
+        }
+
+        guard let returnBindings = associatedTypeWitnessBindings(
+            fromRequirementType: requirementComponents.returnType,
+            toWitnessType: witnessComponents.returnType,
+            associatedTypeNames: associatedTypeNames,
+            moduleName: moduleName
+        ),
+        let mergedBindings = mergingAssociatedTypeBindings(bindings, with: returnBindings) else {
+            return nil
+        }
+
+        return mergedBindings
+    }
+
+    private func callableArgumentTypes(
+        from rawArguments: String,
+        moduleName: String
+    ) -> [String]? {
+        let cleanedArguments = cleanedTypeName(rawArguments, moduleName: moduleName)
+        guard let tuple = parsedTupleType(fromArgumentList: cleanedArguments) else {
+            return nil
+        }
+
+        return tuple.elements.map { element in
+            rawTupleElementType(element)
+        }
+    }
+
+    private func rawTupleElementType(_ element: TupleTypeElementSyntax) -> String {
+        var rawType = element.type.trimmedDescription
+        if element.inoutKeyword != nil {
+            rawType = "inout \(rawType)"
+        }
+        if element.ellipsis != nil {
+            rawType += "..."
+        }
+        return rawType
+    }
+
+    private func associatedTypeWitnessBindings(
+        fromRequirementType requirementType: String,
+        toWitnessType witnessType: String,
+        associatedTypeNames: Set<String>,
+        moduleName: String
+    ) -> [String: String]? {
+        let cleanedRequirementType = cleanedTypeName(requirementType, moduleName: moduleName)
+        let cleanedWitnessType = cleanedTypeName(witnessType, moduleName: moduleName)
+        guard
+            let requirementSyntax = parsedTypeSyntax(from: cleanedRequirementType),
+            let witnessSyntax = parsedTypeSyntax(from: cleanedWitnessType)
+        else {
+            return nil
+        }
+
+        return associatedTypeWitnessBindings(
+            fromRequirementType: requirementSyntax,
+            toWitnessType: witnessSyntax,
+            associatedTypeNames: associatedTypeNames
+        )
+    }
+
+    private func associatedTypeWitnessBindings(
+        fromRequirementType requirementType: TypeSyntax,
+        toWitnessType witnessType: TypeSyntax,
+        associatedTypeNames: Set<String>
+    ) -> [String: String]? {
+        if let associatedTypeName = associatedTypeRequirementName(
+            for: requirementType,
+            associatedTypeNames: associatedTypeNames
+        ) {
+            return [associatedTypeName: witnessType.trimmedDescription]
+        }
+
+        if isSelfPlaceholderType(requirementType) {
+            return [:]
+        }
+
+        if requirementType.trimmedDescription == witnessType.trimmedDescription {
+            return [:]
+        }
+
+        if let requirementIdentifier = requirementType.as(IdentifierTypeSyntax.self),
+           let witnessIdentifier = witnessType.as(IdentifierTypeSyntax.self) {
+            guard requirementIdentifier.name.text == witnessIdentifier.name.text else {
+                return nil
+            }
+
+            return associatedTypeWitnessBindings(
+                fromRequirementArguments: requirementIdentifier.genericArgumentClause?.arguments,
+                toWitnessArguments: witnessIdentifier.genericArgumentClause?.arguments,
+                associatedTypeNames: associatedTypeNames
+            )
+        }
+
+        if let requirementMember = requirementType.as(MemberTypeSyntax.self),
+           let witnessMember = witnessType.as(MemberTypeSyntax.self) {
+            guard requirementMember.name.text == witnessMember.name.text,
+                  let baseBindings = associatedTypeWitnessBindings(
+                      fromRequirementType: requirementMember.baseType,
+                      toWitnessType: witnessMember.baseType,
+                      associatedTypeNames: associatedTypeNames
+                  ),
+                  let argumentBindings = associatedTypeWitnessBindings(
+                      fromRequirementArguments: requirementMember.genericArgumentClause?.arguments,
+                      toWitnessArguments: witnessMember.genericArgumentClause?.arguments,
+                      associatedTypeNames: associatedTypeNames
+                  ) else {
+                return nil
+            }
+
+            return mergingAssociatedTypeBindings(baseBindings, with: argumentBindings)
+        }
+
+        if let requirementAttributed = requirementType.as(AttributedTypeSyntax.self),
+           let witnessAttributed = witnessType.as(AttributedTypeSyntax.self) {
+            guard requirementAttributed.specifiers.trimmedDescription == witnessAttributed.specifiers.trimmedDescription,
+                  requirementAttributed.attributes.trimmedDescription == witnessAttributed.attributes.trimmedDescription else {
+                return nil
+            }
+
+            return associatedTypeWitnessBindings(
+                fromRequirementType: requirementAttributed.baseType,
+                toWitnessType: witnessAttributed.baseType,
+                associatedTypeNames: associatedTypeNames
+            )
+        }
+
+        if let requirementTuple = requirementType.as(TupleTypeSyntax.self),
+           let witnessTuple = witnessType.as(TupleTypeSyntax.self) {
+            guard requirementTuple.elements.count == witnessTuple.elements.count else {
+                return nil
+            }
+
+            var bindings: [String: String] = [:]
+            for (requirementElement, witnessElement) in zip(requirementTuple.elements, witnessTuple.elements) {
+                guard requirementElement.firstName?.text == witnessElement.firstName?.text,
+                      requirementElement.secondName?.text == witnessElement.secondName?.text,
+                      (requirementElement.inoutKeyword != nil) == (witnessElement.inoutKeyword != nil),
+                      (requirementElement.ellipsis != nil) == (witnessElement.ellipsis != nil),
+                      let elementBindings = associatedTypeWitnessBindings(
+                          fromRequirementType: requirementElement.type,
+                          toWitnessType: witnessElement.type,
+                          associatedTypeNames: associatedTypeNames
+                      ),
+                      let mergedBindings = mergingAssociatedTypeBindings(bindings, with: elementBindings) else {
+                    return nil
+                }
+                bindings = mergedBindings
+            }
+
+            return bindings
+        }
+
+        if let requirementFunction = requirementType.as(FunctionTypeSyntax.self),
+           let witnessFunction = witnessType.as(FunctionTypeSyntax.self) {
+            guard requirementFunction.parameters.count == witnessFunction.parameters.count else {
+                return nil
+            }
+
+            var bindings: [String: String] = [:]
+            for (requirementParameter, witnessParameter) in zip(requirementFunction.parameters, witnessFunction.parameters) {
+                guard requirementParameter.firstName?.text == witnessParameter.firstName?.text,
+                      requirementParameter.secondName?.text == witnessParameter.secondName?.text,
+                      requirementParameter.ellipsis == witnessParameter.ellipsis,
+                      let parameterBindings = associatedTypeWitnessBindings(
+                          fromRequirementType: requirementParameter.type,
+                          toWitnessType: witnessParameter.type,
+                          associatedTypeNames: associatedTypeNames
+                      ),
+                      let mergedBindings = mergingAssociatedTypeBindings(bindings, with: parameterBindings) else {
+                    return nil
+                }
+                bindings = mergedBindings
+            }
+
+            guard let returnBindings = associatedTypeWitnessBindings(
+                fromRequirementType: requirementFunction.returnClause.type,
+                toWitnessType: witnessFunction.returnClause.type,
+                associatedTypeNames: associatedTypeNames
+            ) else {
+                return nil
+            }
+
+            return mergingAssociatedTypeBindings(bindings, with: returnBindings)
+        }
+
+        if let requirementOptional = requirementType.as(OptionalTypeSyntax.self),
+           let witnessOptional = witnessType.as(OptionalTypeSyntax.self) {
+            return associatedTypeWitnessBindings(
+                fromRequirementType: requirementOptional.wrappedType,
+                toWitnessType: witnessOptional.wrappedType,
+                associatedTypeNames: associatedTypeNames
+            )
+        }
+
+        if let requirementImplicitOptional = requirementType.as(ImplicitlyUnwrappedOptionalTypeSyntax.self),
+           let witnessImplicitOptional = witnessType.as(ImplicitlyUnwrappedOptionalTypeSyntax.self) {
+            return associatedTypeWitnessBindings(
+                fromRequirementType: requirementImplicitOptional.wrappedType,
+                toWitnessType: witnessImplicitOptional.wrappedType,
+                associatedTypeNames: associatedTypeNames
+            )
+        }
+
+        if let requirementArray = requirementType.as(ArrayTypeSyntax.self),
+           let witnessArray = witnessType.as(ArrayTypeSyntax.self) {
+            return associatedTypeWitnessBindings(
+                fromRequirementType: requirementArray.element,
+                toWitnessType: witnessArray.element,
+                associatedTypeNames: associatedTypeNames
+            )
+        }
+
+        if let requirementDictionary = requirementType.as(DictionaryTypeSyntax.self),
+           let witnessDictionary = witnessType.as(DictionaryTypeSyntax.self),
+           let keyBindings = associatedTypeWitnessBindings(
+               fromRequirementType: requirementDictionary.key,
+               toWitnessType: witnessDictionary.key,
+               associatedTypeNames: associatedTypeNames
+           ),
+           let valueBindings = associatedTypeWitnessBindings(
+               fromRequirementType: requirementDictionary.value,
+               toWitnessType: witnessDictionary.value,
+               associatedTypeNames: associatedTypeNames
+           ) {
+            return mergingAssociatedTypeBindings(keyBindings, with: valueBindings)
+        }
+
+        if let requirementMetatype = requirementType.as(MetatypeTypeSyntax.self),
+           let witnessMetatype = witnessType.as(MetatypeTypeSyntax.self) {
+            return associatedTypeWitnessBindings(
+                fromRequirementType: requirementMetatype.baseType,
+                toWitnessType: witnessMetatype.baseType,
+                associatedTypeNames: associatedTypeNames
+            )
+        }
+
+        if let requirementPackExpansion = requirementType.as(PackExpansionTypeSyntax.self),
+           let witnessPackExpansion = witnessType.as(PackExpansionTypeSyntax.self) {
+            return associatedTypeWitnessBindings(
+                fromRequirementType: requirementPackExpansion.repetitionPattern,
+                toWitnessType: witnessPackExpansion.repetitionPattern,
+                associatedTypeNames: associatedTypeNames
+            )
+        }
+
+        if let requirementSomeOrAny = requirementType.as(SomeOrAnyTypeSyntax.self),
+           let witnessSomeOrAny = witnessType.as(SomeOrAnyTypeSyntax.self),
+           requirementSomeOrAny.someOrAnySpecifier.text == witnessSomeOrAny.someOrAnySpecifier.text {
+            return associatedTypeWitnessBindings(
+                fromRequirementType: requirementSomeOrAny.constraint,
+                toWitnessType: witnessSomeOrAny.constraint,
+                associatedTypeNames: associatedTypeNames
+            )
+        }
+
+        if let requirementComposition = requirementType.as(CompositionTypeSyntax.self),
+           let witnessComposition = witnessType.as(CompositionTypeSyntax.self) {
+            guard requirementComposition.elements.count == witnessComposition.elements.count else {
+                return nil
+            }
+
+            var bindings: [String: String] = [:]
+            for (requirementElement, witnessElement) in zip(requirementComposition.elements, witnessComposition.elements) {
+                guard let elementBindings = associatedTypeWitnessBindings(
+                    fromRequirementType: requirementElement.type,
+                    toWitnessType: witnessElement.type,
+                    associatedTypeNames: associatedTypeNames
+                ),
+                let mergedBindings = mergingAssociatedTypeBindings(bindings, with: elementBindings) else {
+                    return nil
+                }
+                bindings = mergedBindings
+            }
+
+            return bindings
+        }
+
+        return nil
+    }
+
+    private func associatedTypeWitnessBindings(
+        fromRequirementArguments requirementArguments: GenericArgumentListSyntax?,
+        toWitnessArguments witnessArguments: GenericArgumentListSyntax?,
+        associatedTypeNames: Set<String>
+    ) -> [String: String]? {
+        switch (requirementArguments, witnessArguments) {
+        case (nil, nil):
+            return [:]
+        case let (requirementArguments?, witnessArguments?):
+            guard requirementArguments.count == witnessArguments.count else {
+                return nil
+            }
+
+            var bindings: [String: String] = [:]
+            for (requirementArgument, witnessArgument) in zip(requirementArguments, witnessArguments) {
+                guard let argumentBindings = associatedTypeWitnessBindings(
+                    fromRequirementType: requirementArgument.argument,
+                    toWitnessType: witnessArgument.argument,
+                    associatedTypeNames: associatedTypeNames
+                ),
+                let mergedBindings = mergingAssociatedTypeBindings(bindings, with: argumentBindings) else {
+                    return nil
+                }
+                bindings = mergedBindings
+            }
+
+            return bindings
+        default:
+            return nil
+        }
+    }
+
+    private func associatedTypeRequirementName(
+        for type: TypeSyntax,
+        associatedTypeNames: Set<String>
+    ) -> String? {
+        if let identifier = type.as(IdentifierTypeSyntax.self),
+           associatedTypeNames.contains(identifier.name.text) {
+            return identifier.name.text
+        }
+
+        guard let memberType = type.as(MemberTypeSyntax.self),
+              associatedTypeNames.contains(memberType.name.text),
+              isSelfPlaceholderType(memberType.baseType) else {
+            return nil
+        }
+
+        return memberType.name.text
+    }
+
+    private func isSelfPlaceholderType(_ type: TypeSyntax) -> Bool {
+        guard let identifier = type.as(IdentifierTypeSyntax.self) else {
+            return false
+        }
+
+        if identifier.name.text == "Self" {
+            return true
+        }
+
+        return identifier.name.text.wholeMatch(of: /^A[0-9]*$/) != nil
+    }
+
+    private func mergingAssociatedTypeBindings(
+        _ current: [String: String],
+        with newBindings: [String: String]
+    ) -> [String: String]? {
+        var merged = current
+        for (name, rawType) in newBindings {
+            if let existing = merged[name], existing != rawType {
+                return nil
+            }
+            merged[name] = rawType
+        }
+        return merged
     }
 
     /// Normalizes conformance lists for declarations and associated types.
