@@ -1656,6 +1656,42 @@ struct IntegrationTests {
     }
 
     @Test
+    func protocolRequirementGenericMethodUsesMethodTypeParameter() async throws {
+        let fixture = try integrationCompiler.compileFramework(
+            moduleName: "ProtocolGenericMethodFixture",
+            sources: [
+                "ProtocolGenericMethodFixture.swift": """
+                public struct Subviews {
+                    public init() {}
+                }
+
+                public struct Context {
+                    public init() {}
+                }
+
+                public protocol Layout {
+                    func firstIndex<A: Hashable>(
+                        of value: A,
+                        subviews: Subviews,
+                        context: Context
+                    ) -> Int?
+                }
+                """
+            ]
+        )
+        let contents = try await generateInterface(fixture: fixture)
+        let normalized = normalizedInterface(contents)
+
+        #expect(normalized.contains("public protocol Layout {"))
+        #expect(
+            normalized.contains(
+                "func firstIndex<A1>(of: A1, subviews: Subviews, context: Context) -> Swift.Int? where A1 : Swift.Hashable"
+            )
+        )
+        #expect(!normalized.contains("func firstIndex<Self>"))
+    }
+
+    @Test
     func constrainedExtensionMethodsOnGenericType() async throws {
         let fixture = try integrationCompiler.compileFramework(
             moduleName: "ConstrainedExtensionFixture",

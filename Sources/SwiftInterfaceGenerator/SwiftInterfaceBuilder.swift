@@ -1306,6 +1306,7 @@ struct SwiftInterfaceBuilder: Sendable {
             returnType: returnType,
             genericWhereClause: genericParsed.whereClause,
             trailingWhereClause: trailingWhereClause,
+            isProtocolRequirement: isProtocolRequirement,
             knownTypeComponents: knownTypeComponents,
             moduleName: moduleName
         )
@@ -1341,42 +1342,69 @@ struct SwiftInterfaceBuilder: Sendable {
         returnType: String,
         genericWhereClause: String,
         trailingWhereClause: String,
+        isProtocolRequirement: Bool,
         knownTypeComponents: Set<String>,
         moduleName: String
     ) -> [String] {
         let explicitParameters = parseGenericParameters(from: explicitGenericParamClause)
-        guard explicitParameters == ["Self"] else {
-            return explicitParameters
-        }
-
         let genericConstraintClauses = [genericWhereClause, trailingWhereClause]
             .filter { !$0.isEmpty }
         var inferredParameters: [String] = []
+        var inferredParameterSet: Set<String> = []
 
+        func appendInferred(_ token: String) {
+            guard
+                isLikelyMethodTypeParameter(token, knownTypeComponents: knownTypeComponents),
+                inferredParameterSet.insert(token).inserted
+            else {
+                return
+            }
+            inferredParameters.append(token)
+        }
+
+        for token in genericParameterTokens(in: arguments, moduleName: moduleName) {
+            appendInferred(token)
+        }
+        for token in genericParameterTokens(in: returnType, moduleName: moduleName) {
+            appendInferred(token)
+        }
         for clause in genericConstraintClauses {
-            for token in genericRequirementTokens(in: clause) where isLikelyMethodTypeParameter(
-                token,
-                knownTypeComponents: knownTypeComponents
-            ) {
-                inferredParameters.append(token)
+            for token in genericRequirementTokens(in: clause) {
+                appendInferred(token)
             }
         }
 
-        for token in genericParameterTokens(in: arguments, moduleName: moduleName)
-            .filter({ isLikelyMethodTypeParameter($0, knownTypeComponents: knownTypeComponents) }) {
-            inferredParameters.append(token)
-        }
-        for token in genericParameterTokens(in: returnType, moduleName: moduleName)
-            .filter({ isLikelyMethodTypeParameter($0, knownTypeComponents: knownTypeComponents) }) {
-            inferredParameters.append(token)
+        if explicitParameters == ["Self"] {
+            if !inferredParameters.isEmpty {
+                return inferredParameters
+            }
+
+            // Protocol requirement descriptors can surface `Self` as the explicit method
+            // generic parameter while the actual placeholders only appear textually in the
+            // where clause (for example `where A1 : Hashable`). In that case SwiftSyntax
+            // can fail to recover the undeclared placeholder from the synthetic parse, so
+            // fall back to scanning numbered placeholders directly from the constraint text.
+            for clause in genericConstraintClauses {
+                for token in numberedGenericPlaceholderTokens(in: clause) where isLikelyMethodTypeParameter(
+                    token,
+                    knownTypeComponents: knownTypeComponents
+                ) {
+                    return [token]
+                }
+            }
+
+            return []
         }
 
-        for parameter in inferredParameters {
-            if parameter != "Self" && !knownTypeComponents.contains(parameter) {
-                return [parameter]
-            }
+        if isProtocolRequirement,
+           !explicitParameters.isEmpty,
+           explicitParameters.allSatisfy(isProtocolSelfPlaceholder),
+           !inferredParameters.isEmpty,
+           explicitParameters.allSatisfy({ !inferredParameterSet.contains($0) }) {
+            return inferredParameters
         }
-        return []
+
+        return explicitParameters
     }
 
     private func parseGenericParameters(from clause: String) -> [String] {
@@ -1388,6 +1416,21 @@ struct SwiftInterfaceBuilder: Sendable {
             .split(separator: ",")
             .map { String($0).trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
+    }
+
+    private func numberedGenericPlaceholderTokens(in fragment: String) -> [String] {
+        var seen: Set<String> = []
+        return fragment.matches(of: #/\b([A-Z][A-Za-z0-9_]*[0-9]+)\b/#).compactMap { match in
+            let token = String(match.1)
+            guard seen.insert(token).inserted else {
+                return nil
+            }
+            return token
+        }
+    }
+
+    private func isProtocolSelfPlaceholder(_ token: String) -> Bool {
+        token.count == 1 && token.first?.isUppercase == true
     }
 
     private func isLikelyMethodTypeParameter(
