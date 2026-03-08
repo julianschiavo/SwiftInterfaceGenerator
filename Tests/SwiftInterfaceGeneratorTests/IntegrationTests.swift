@@ -1808,6 +1808,27 @@ struct IntegrationTests {
         #expect(!normalized.contains("public struct AccessibilityTraitSet>"))
     }
 
+    @Test
+    func staticFalsePropertyIsEscaped() async throws {
+        let fixture = try integrationCompiler.compileFramework(
+            moduleName: "KeywordPropertyFixture",
+            sources: [
+                "KeywordPropertyFixture.swift": """
+                public struct Flags {
+                    public static var `false`: Bool {
+                        true
+                    }
+                }
+                """
+            ]
+        )
+        let contents = try await generateInterface(fixture: fixture)
+        let normalized = normalizedInterface(contents)
+
+        #expect(normalized.contains("public struct Flags {"))
+        #expect(normalized.contains("public static var `false`: Swift.Bool { get }"))
+    }
+
     // MARK: - Unavailable Module Filtering
 
     @Test
