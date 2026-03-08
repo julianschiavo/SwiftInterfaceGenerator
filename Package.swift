@@ -19,6 +19,10 @@ let package = Package(
             from: "0.3.0"
         ),
         .package(
+            url: "https://github.com/swiftlang/swift-syntax.git",
+            from: "600.0.1"
+        ),
+        .package(
             url: "https://github.com/apple/swift-docc-plugin",
             from: "1.4.5"
         ),
@@ -28,6 +32,8 @@ let package = Package(
             name: "SwiftInterfaceGenerator",
             dependencies: [
                 .product(name: "Subprocess", package: "swift-subprocess"),
+                .product(name: "SwiftParser", package: "swift-syntax"),
+                .product(name: "SwiftSyntax", package: "swift-syntax"),
             ]
         ),
         .testTarget(

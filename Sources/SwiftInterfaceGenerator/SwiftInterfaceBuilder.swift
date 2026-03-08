@@ -1,4 +1,6 @@
 import Foundation
+import SwiftParser
+import SwiftSyntax
 
 /// Builds `.swiftinterface` file contents from demangled symbol data.
 ///
@@ -163,6 +165,15 @@ struct SwiftInterfaceBuilder: Sendable {
 
         /// Determines the declaration kind from the discovered metadata.
         ///
+        /// All raw type-bearing strings from this declaration's members (excluding conformances).
+        var rawTypeFragments: [String] {
+            initializers.map(\.rawSignature) +
+            methods.map(\.rawSignature) +
+            staticMethods.map(\.rawSignature) +
+            properties.map(\.rawType) +
+            enumCases.compactMap(\.rawPayload)
+        }
+
         /// Protocol takes priority, then enum (if cases exist), then class, defaulting to struct.
         var resolvedKind: Kind {
             if isProtocol {
@@ -645,7 +656,6 @@ struct SwiftInterfaceBuilder: Sendable {
         let name = escapedIdentifier(simpleName(of: fullName))
         let conformanceClause = renderedConformanceClause(
             for: declaration,
-            protocolNames: protocolNames,
             moduleName: moduleName
         )
         let isProtocol = declaration.resolvedKind == .protocol
@@ -836,7 +846,6 @@ struct SwiftInterfaceBuilder: Sendable {
     ///   empty string if there are no conformances.
     private func renderedConformanceClause(
         for declaration: Declaration,
-        protocolNames: Set<String>,
         moduleName: String
     ) -> String {
         renderedConformanceClause(for: declaration.conformances, moduleName: moduleName)
@@ -963,13 +972,6 @@ struct SwiftInterfaceBuilder: Sendable {
             return []
         }
 
-        let callableSignatures = (declaration.initializers + declaration.methods + declaration.staticMethods)
-            .map { typePortionOfSignature($0.rawSignature) }
-        let rawFragments: [String] =
-            declaration.properties.map(\.rawType) +
-            declaration.enumCases.compactMap(\.rawPayload) +
-            callableSignatures
-
         var genericParameters: [String] = []
         var excludedTokens = Self.genericExcludedTokens
         if !moduleName.isEmpty {
@@ -977,8 +979,8 @@ struct SwiftInterfaceBuilder: Sendable {
         }
 
         var seenParameters: Set<String> = []
-        for fragment in rawFragments {
-            for token in bareTokens(in: fragment) {
+        for fragment in declaration.rawTypeFragments {
+            for token in genericParameterTokens(in: fragment, moduleName: moduleName) {
                 if knownTypeComponents.contains(token) || excludedTokens.contains(token) {
                     continue
                 }
@@ -994,45 +996,6 @@ struct SwiftInterfaceBuilder: Sendable {
 
         return Array(genericParameters.prefix(arity))
     }
-
-    /// Extracts bare identifier tokens from a type signature string.
-    ///
-    /// Splits on non-alphanumeric/underscore characters and excludes tokens that appear
-    /// immediately after a dot (which are module-qualified suffixes, not standalone names).
-    ///
-    /// - Parameter string: The raw signature string to tokenize.
-    /// - Returns: An array of bare identifier tokens found in the string.
-    private func bareTokens(in string: String) -> [String] {
-        var tokens: [String] = []
-        var current = ""
-        var precededByDot = false
-        var previousCharacter: Character?
-
-        for character in string {
-            if character.isLetter || character.isNumber || character == "_" {
-                if current.isEmpty {
-                    precededByDot = previousCharacter == "."
-                }
-                current.append(character)
-            } else {
-                if !current.isEmpty {
-                    let followedByDot = character == "."
-                    if !precededByDot && !followedByDot {
-                        tokens.append(current)
-                    }
-                    current.removeAll(keepingCapacity: true)
-                }
-            }
-            previousCharacter = character
-        }
-
-        if !current.isEmpty, !precededByDot {
-            tokens.append(current)
-        }
-
-        return tokens
-    }
-
     /// Discovers which external modules are referenced in the given declarations.
     ///
     /// Scans all conformances, property types, method signatures, and enum payloads
@@ -1065,11 +1028,7 @@ struct SwiftInterfaceBuilder: Sendable {
         var rawFragments: [String] = []
         for declaration in declarations.values.sorted(by: { $0.order < $1.order }) {
             rawFragments.append(contentsOf: declaration.conformances)
-            rawFragments.append(contentsOf: declaration.initializers.map(\.rawSignature))
-            rawFragments.append(contentsOf: declaration.methods.map(\.rawSignature))
-            rawFragments.append(contentsOf: declaration.staticMethods.map(\.rawSignature))
-            rawFragments.append(contentsOf: declaration.properties.map(\.rawType))
-            rawFragments.append(contentsOf: declaration.enumCases.compactMap(\.rawPayload))
+            rawFragments.append(contentsOf: declaration.rawTypeFragments)
         }
 
         var modules: [String] = []
@@ -1246,21 +1205,35 @@ struct SwiftInterfaceBuilder: Sendable {
         protocolNames: Set<String>,
         moduleName: String
     ) throws -> String {
-        guard !rawArguments.isEmpty else {
-            return ""
-        }
-
-        return try splitTopLevel(rawArguments).map { rawArgument in
-            guard let colonIndex = firstTopLevelColon(in: rawArgument) else {
-                return "_: \(renderedTypeName(rawArgument, protocolNames: protocolNames, moduleName: moduleName))"
-            }
-
-            let label = rawArgument[..<colonIndex].trimmingCharacters(in: .whitespaces)
-            let rawType = rawArgument[rawArgument.index(after: colonIndex)...]
-                .trimmingCharacters(in: .whitespaces)
-            let renderedLabel = label == "_" ? "_" : escapedIdentifier(String(label))
-            return "\(renderedLabel): \(renderedTypeName(rawType, protocolNames: protocolNames, moduleName: moduleName))"
+        try parsedTupleType(fromArgumentList: rawArguments)?.elements.map { element in
+            let label = element.firstName?.text ?? "_"
+            let renderedLabel = label == "_" ? "_" : escapedIdentifier(label)
+            return "\(renderedLabel): \(renderedTupleElementType(element, protocolNames: protocolNames, moduleName: moduleName))"
         }.joined(separator: ", ")
+            ?? {
+                throw SwiftInterfaceGeneratorError.unexpectedOutput(
+                    "Unbalanced argument list: \(rawArguments)"
+                )
+            }()
+    }
+
+    private func renderedTupleElementType(
+        _ element: TupleTypeElementSyntax,
+        protocolNames: Set<String>,
+        moduleName: String
+    ) -> String {
+        var rendered = renderedTypeName(
+            element.type.trimmedDescription,
+            protocolNames: protocolNames,
+            moduleName: moduleName
+        )
+        if element.inoutKeyword != nil {
+            rendered = "inout \(rendered)"
+        }
+        if element.ellipsis != nil {
+            rendered += "..."
+        }
+        return rendered
     }
 
     private static let genericExcludedTokens: Set<String> = [
@@ -1334,131 +1307,230 @@ struct SwiftInterfaceBuilder: Sendable {
         moduleName: String = ""
     ) -> String {
         let cleaned = cleanedTypeName(rawTypeName, moduleName: moduleName)
-        return renderedNestedTypeName(cleaned, protocolNames: protocolNames)
+        guard let typeSyntax = parsedTypeSyntax(from: cleaned) else {
+            return cleaned
+        }
+
+        return ExistentialTypeRewriter(protocolNames: protocolNames)
+            .visit(typeSyntax)
+            .trimmedDescription
     }
 
-    private func renderedNestedTypeName(
-        _ typeName: String,
-        protocolNames: Set<String>
-    ) -> String {
-        let trimmed = typeName.trimmingCharacters(in: .whitespaces)
-
-        if protocolNames.contains(trimmed) {
-            return "any \(trimmed)"
+    private func parsedTypeSyntax(from source: String) -> TypeSyntax? {
+        var parser = Parser(source)
+        let type = TypeSyntax.parse(from: &parser)
+        guard !type.hasError else {
+            return nil
         }
-
-        if trimmed.hasPrefix("inout ") {
-            let inner = String(trimmed.dropFirst("inout ".count))
-            return "inout \(renderedNestedTypeName(inner, protocolNames: protocolNames))"
-        }
-
-        if let effectArrowRange = topLevelArrowRange(in: trimmed) {
-            let left = String(trimmed[..<effectArrowRange.lowerBound]).trimmingCharacters(in: .whitespaces)
-            let right = String(trimmed[effectArrowRange.upperBound...]).trimmingCharacters(in: .whitespaces)
-            let leftRendered = renderedNestedTypeName(left, protocolNames: protocolNames)
-            let rightRendered = renderedNestedTypeName(right, protocolNames: protocolNames)
-            return "\(leftRendered) -> \(rightRendered)"
-        }
-
-        if trimmed.hasSuffix("?") {
-            let inner = String(trimmed.dropLast())
-            let renderedInner = renderedNestedTypeName(inner, protocolNames: protocolNames)
-            if renderedInner.hasPrefix("any ") {
-                return "(\(renderedInner))?"
-            }
-            return "\(renderedInner)?"
-        }
-
-        if trimmed.hasPrefix("["),
-           trimmed.hasSuffix("]") {
-            let inner = String(trimmed.dropFirst().dropLast())
-            if let colonIndex = firstTopLevelColon(in: inner) {
-                let key = inner[..<colonIndex].trimmingCharacters(in: .whitespaces)
-                let value = inner[inner.index(after: colonIndex)...].trimmingCharacters(in: .whitespaces)
-                return "[\(renderedNestedTypeName(String(key), protocolNames: protocolNames)) : \(renderedNestedTypeName(String(value), protocolNames: protocolNames))]"
-            }
-            return "[\(renderedNestedTypeName(inner, protocolNames: protocolNames))]"
-        }
-
-        if let angleBracketStart = trimmed.firstIndex(of: "<"),
-           let closingAngle = matchingClosingDelimiter(
-                in: trimmed,
-                from: angleBracketStart,
-                open: "<",
-                close: ">"
-           ),
-           trimmed.index(after: closingAngle) == trimmed.endIndex {
-            let base = String(trimmed[..<angleBracketStart])
-            let rawArguments = String(trimmed[trimmed.index(after: angleBracketStart)..<closingAngle])
-            if let arguments = try? splitTopLevel(rawArguments) {
-                let renderedArguments = arguments.map {
-                    renderedNestedTypeName($0, protocolNames: protocolNames)
-                }.joined(separator: ", ")
-                return "\(base)<\(renderedArguments)>"
-            }
-        }
-
-        if trimmed.hasPrefix("("),
-           trimmed.hasSuffix(")"),
-           let open = trimmed.firstIndex(of: "("),
-           let closingParenthesis = matchingClosingParenthesis(in: trimmed, from: open),
-           trimmed.index(after: closingParenthesis) == trimmed.endIndex {
-            let inner = String(trimmed[trimmed.index(after: open)..<closingParenthesis])
-            if let elements = try? splitTopLevel(inner), !elements.isEmpty {
-                let renderedElements = elements.map { element in
-                    guard let colonIndex = firstTopLevelColon(in: element) else {
-                        return renderedNestedTypeName(element, protocolNames: protocolNames)
-                    }
-
-                    let label = element[..<colonIndex].trimmingCharacters(in: .whitespaces)
-                    let type = element[element.index(after: colonIndex)...].trimmingCharacters(in: .whitespaces)
-                    return "\(label): \(renderedNestedTypeName(String(type), protocolNames: protocolNames))"
-                }.joined(separator: ", ")
-                return "(\(renderedElements))"
-            }
-        }
-
-        if trimmed.hasSuffix(".Type") {
-            let inner = String(trimmed.dropLast(".Type".count))
-            let renderedInner = renderedNestedTypeName(inner, protocolNames: protocolNames)
-            if renderedInner.hasPrefix("any ") {
-                return "(\(renderedInner)).Type"
-            }
-            return "\(renderedInner).Type"
-        }
-
-        return wrappedProtocolLeaves(in: trimmed, protocolNames: protocolNames)
+        return type
     }
 
-    private func wrappedProtocolLeaves(
-        in typeName: String,
-        protocolNames: Set<String>
-    ) -> String {
-        protocolNames.sorted { $0.count > $1.count }
-            .reduce(typeName) { current, protocolName in
-                replacingProtocolLeaf(
-                    named: protocolName,
-                    in: current
+    private func parsedTupleType(fromArgumentList source: String) -> TupleTypeSyntax? {
+        guard let parsedType = parsedTypeSyntax(from: "(\(source))") else {
+            return nil
+        }
+        return parsedType.as(TupleTypeSyntax.self)
+    }
+
+    private func cleanedTypeFragment(
+        from fragment: String,
+        moduleName: String
+    ) -> (returnType: String, whereClause: String) {
+        let cleanedFragment = cleanedTypeName(fragment, moduleName: moduleName)
+        let typeFragment = cleanedFragment.firstIndex(of: "(").map {
+            String(cleanedFragment[$0...])
+        } ?? cleanedFragment
+        return splitTrailingWhereClause(from: typeFragment)
+    }
+
+    private func parsedTypeFragment(from fragment: String, moduleName: String) -> TypeSyntax? {
+        parsedTypeSyntax(from: cleanedTypeFragment(from: fragment, moduleName: moduleName).returnType)
+    }
+
+    private func genericParameterTokens(in fragment: String, moduleName: String) -> [String] {
+        let parts = cleanedTypeFragment(from: fragment, moduleName: moduleName)
+
+        var tokens: [String] = []
+        if let typeSyntax = parsedTypeSyntax(from: parts.returnType) {
+            let collector = GenericParameterTokenCollector()
+            collector.walk(typeSyntax)
+            tokens.append(contentsOf: collector.tokens)
+        }
+        if !parts.whereClause.isEmpty {
+            tokens.append(contentsOf: genericRequirementTokens(in: parts.whereClause))
+        }
+        return tokens
+    }
+
+    private func referencedTypeArities(
+        in fragment: String,
+        moduleName: String
+    ) -> [(name: String, arity: Int)] {
+        guard let typeSyntax = parsedTypeFragment(from: fragment, moduleName: moduleName) else {
+            return []
+        }
+
+        let collector = TypeReferenceCollector()
+        collector.walk(typeSyntax)
+        return collector.references
+    }
+
+    private func genericRequirementTokens(in clause: String) -> [String] {
+        let requirements = clause.replacing(/^\s*where\s+/, with: "")
+            .trimmingCharacters(in: .whitespaces)
+        guard !requirements.isEmpty else {
+            return []
+        }
+
+        var parser = Parser("func _<T>() where \(requirements) {}")
+        let declaration = DeclSyntax.parse(from: &parser)
+        guard let function = declaration.as(FunctionDeclSyntax.self),
+              let whereClause = function.genericWhereClause else {
+            return []
+        }
+
+        let collector = GenericParameterTokenCollector()
+        collector.walk(whereClause)
+        return collector.tokens
+    }
+
+    private final class GenericParameterTokenCollector: SyntaxVisitor {
+        var tokens: [String] = []
+
+        init() {
+            super.init(viewMode: .sourceAccurate)
+        }
+
+        override func visit(_ node: IdentifierTypeSyntax) -> SyntaxVisitorContinueKind {
+            if !(node.parent?.is(MemberTypeSyntax.self) ?? false) {
+                tokens.append(node.name.text)
+            }
+            return .visitChildren
+        }
+    }
+
+    private final class TypeReferenceCollector: SyntaxVisitor {
+        var references: [(name: String, arity: Int)] = []
+
+        init() {
+            super.init(viewMode: .sourceAccurate)
+        }
+
+        override func visit(_ node: IdentifierTypeSyntax) -> SyntaxVisitorContinueKind {
+            references.append((node.name.text, node.genericArgumentClause?.arguments.count ?? 0))
+            return .visitChildren
+        }
+
+        override func visit(_ node: MemberTypeSyntax) -> SyntaxVisitorContinueKind {
+            references.append((fullName(of: node), node.genericArgumentClause?.arguments.count ?? 0))
+            return .visitChildren
+        }
+
+        private func fullName(of node: MemberTypeSyntax) -> String {
+            "\(baseName(of: node.baseType)).\(node.name.text)"
+        }
+
+        private func baseName(of type: TypeSyntax) -> String {
+            if let identifier = type.as(IdentifierTypeSyntax.self) {
+                return identifier.name.text
+            }
+            if let member = type.as(MemberTypeSyntax.self) {
+                return fullName(of: member)
+            }
+            return type.trimmedDescription
+        }
+    }
+
+    private final class ExistentialTypeRewriter: SyntaxRewriter {
+        private let protocolNames: Set<String>
+
+        init(protocolNames: Set<String>) {
+            self.protocolNames = protocolNames
+            super.init(viewMode: .sourceAccurate)
+        }
+
+        override func visit(_ node: IdentifierTypeSyntax) -> TypeSyntax {
+            guard shouldWrap(node) else {
+                return super.visit(node)
+            }
+            return wrappedExistential(around: super.visit(node))
+        }
+
+        override func visit(_ node: MemberTypeSyntax) -> TypeSyntax {
+            let visited = super.visit(node)
+            guard let visitedMember = visited.as(MemberTypeSyntax.self),
+                  shouldWrap(visitedMember) else {
+                return visited
+            }
+            return wrappedExistential(around: visited)
+        }
+
+        private func shouldWrap(_ node: IdentifierTypeSyntax) -> Bool {
+            guard protocolNames.contains(node.trimmedDescription) else {
+                return false
+            }
+            guard !(node.parent?.is(SomeOrAnyTypeSyntax.self) ?? false) else {
+                return false
+            }
+            guard !(node.parent?.is(MemberTypeSyntax.self) ?? false) else {
+                return false
+            }
+            return true
+        }
+
+        private func shouldWrap(_ node: MemberTypeSyntax) -> Bool {
+            guard protocolNames.contains(node.trimmedDescription) else {
+                return false
+            }
+            return !(node.parent?.is(SomeOrAnyTypeSyntax.self) ?? false)
+        }
+
+        override func visit(_ node: OptionalTypeSyntax) -> TypeSyntax {
+            let visited = super.visit(node)
+            guard let optional = visited.as(OptionalTypeSyntax.self),
+                  optional.wrappedType.is(SomeOrAnyTypeSyntax.self) else {
+                return visited
+            }
+            return TypeSyntax(optional.with(\.wrappedType, parenthesized(optional.wrappedType)))
+        }
+
+        override func visit(_ node: ImplicitlyUnwrappedOptionalTypeSyntax) -> TypeSyntax {
+            let visited = super.visit(node)
+            guard let iuo = visited.as(ImplicitlyUnwrappedOptionalTypeSyntax.self),
+                  iuo.wrappedType.is(SomeOrAnyTypeSyntax.self) else {
+                return visited
+            }
+            return TypeSyntax(iuo.with(\.wrappedType, parenthesized(iuo.wrappedType)))
+        }
+
+        override func visit(_ node: MetatypeTypeSyntax) -> TypeSyntax {
+            let visited = super.visit(node)
+            guard let metatype = visited.as(MetatypeTypeSyntax.self),
+                  metatype.baseType.is(SomeOrAnyTypeSyntax.self) else {
+                return visited
+            }
+            return TypeSyntax(metatype.with(\.baseType, parenthesized(metatype.baseType)))
+        }
+
+        private func wrappedExistential(around type: some TypeSyntaxProtocol) -> TypeSyntax {
+            TypeSyntax(
+                SomeOrAnyTypeSyntax(
+                    someOrAnySpecifier: .keyword(.any).with(\.trailingTrivia, .space),
+                    constraint: type
                 )
-            }
-    }
-
-    private func replacingProtocolLeaf(
-        named protocolName: String,
-        in string: String
-    ) -> String {
-        guard !protocolName.isEmpty else {
-            return string
+            )
         }
 
-        return replacingLiteralOccurrences(of: protocolName, in: string) { range in
-            guard hasTypeNameBoundary(before: range.lowerBound, in: string),
-                  hasTypeNameBoundary(after: range.upperBound, in: string),
-                  !hasImmediatePrefix("any ", endingAt: range.lowerBound, in: string) else {
-                return String(string[range])
-            }
-
-            return "any \(protocolName)"
+        private func parenthesized(_ type: TypeSyntax) -> TypeSyntax {
+            TypeSyntax(
+                TupleTypeSyntax(
+                    leftParen: .leftParenToken(),
+                    elements: TupleTypeElementListSyntax([
+                        TupleTypeElementSyntax(type: type)
+                    ]),
+                    rightParen: .rightParenToken()
+                )
+            )
         }
     }
 
@@ -2022,22 +2094,6 @@ struct SwiftInterfaceBuilder: Sendable {
         )
     }
 
-    /// Extracts only the type-bearing portion of a method signature, excluding the method name.
-    ///
-    /// For `"makeIterator() -> Stream<A>.Iterator"`, returns `"() -> Stream<A>.Iterator"`.
-    /// For `"init(value: T) -> Box<T>"`, returns `"(value: T) -> Box<T>"`.
-    /// This prevents method names from being mistaken for generic parameters.
-    private func typePortionOfSignature(_ signature: String) -> String {
-        guard let openParen = signature.firstIndex(of: "(") else {
-            return signature
-        }
-        // For generic methods like "respond<A where A: Mod.Proto>(...)", include the generic clause
-        if let angleBracket = signature.firstIndex(of: "<"), angleBracket < openParen {
-            return String(signature[angleBracket...])
-        }
-        return String(signature[openParen...])
-    }
-
     /// Parses a generic clause from a method head like `"respond<A where A: Mod.Proto>"`.
     ///
     /// Returns the bare method name, the generic parameter clause (e.g. `"<A>"`),
@@ -2456,45 +2512,6 @@ struct SwiftInterfaceBuilder: Sendable {
         return string.index(after: cursor)
     }
 
-    private func hasImmediatePrefix(
-        _ prefix: String,
-        endingAt upperBound: String.Index,
-        in string: String
-    ) -> Bool {
-        guard let lowerBound = string.index(
-            upperBound,
-            offsetBy: -prefix.count,
-            limitedBy: string.startIndex
-        ) else {
-            return false
-        }
-
-        return string[lowerBound..<upperBound] == prefix
-    }
-
-    private func hasTypeNameBoundary(
-        before index: String.Index,
-        in string: String
-    ) -> Bool {
-        guard index > string.startIndex else {
-            return true
-        }
-
-        let previous = string[string.index(before: index)]
-        return !isWordOrDot(previous)
-    }
-
-    private func hasTypeNameBoundary(
-        after index: String.Index,
-        in string: String
-    ) -> Bool {
-        guard index < string.endIndex else {
-            return true
-        }
-
-        return !isWordOrDot(string[index])
-    }
-
     private func hasWordBoundary(
         before index: String.Index,
         in string: String
@@ -2515,10 +2532,6 @@ struct SwiftInterfaceBuilder: Sendable {
         }
 
         return !isWordCharacter(string[index])
-    }
-
-    private func isWordOrDot(_ character: Character) -> Bool {
-        character == "." || isWordCharacter(character)
     }
 
     private func isWordCharacter(_ character: Character) -> Bool {
@@ -2561,44 +2574,24 @@ struct SwiftInterfaceBuilder: Sendable {
         declarations: [String: Declaration],
         moduleName: String
     ) -> [String: Int] {
-        // Build all needles: "ModuleName.TypeName<" for each declaration
-        let needles: [(needle: String, fullName: String)] = declarations.keys.map { fullName in
-            let needle = "\(moduleName.isEmpty ? "" : "\(moduleName).")\(fullName)<"
-            return (needle, fullName)
-        }
-        guard !needles.isEmpty else { return [:] }
+        let declarationNames = Set(declarations.keys)
+        guard !declarationNames.isEmpty else { return [:] }
 
-        // Collect all fragments once
         var allFragments: [String] = []
         for declaration in declarations.values {
             allFragments.append(contentsOf: declaration.conformances)
-            allFragments.append(contentsOf: declaration.properties.map(\.rawType))
-            allFragments.append(contentsOf: declaration.initializers.map(\.rawSignature))
-            allFragments.append(contentsOf: declaration.methods.map(\.rawSignature))
-            allFragments.append(contentsOf: declaration.staticMethods.map(\.rawSignature))
-            allFragments.append(contentsOf: declaration.enumCases.compactMap(\.rawPayload))
+            allFragments.append(contentsOf: declaration.rawTypeFragments)
         }
 
         var arityMap: [String: Int] = [:]
 
         for fragment in allFragments {
-            for (needle, fullName) in needles {
-                guard let range = fragment.range(of: needle) else {
+            let references = referencedTypeArities(in: fragment, moduleName: moduleName)
+            for reference in references {
+                guard declarationNames.contains(reference.name) else {
                     continue
                 }
-                let openingIndex = fragment.index(before: range.upperBound)
-                guard let closingIndex = matchingClosingDelimiter(
-                    in: fragment,
-                    from: openingIndex,
-                    open: "<",
-                    close: ">"
-                ) else {
-                    continue
-                }
-                let rawArguments = String(fragment[fragment.index(after: openingIndex)..<closingIndex])
-                if let arguments = try? splitTopLevel(rawArguments) {
-                    arityMap[fullName] = max(arityMap[fullName, default: 0], arguments.count)
-                }
+                arityMap[reference.name] = max(arityMap[reference.name, default: 0], reference.arity)
             }
         }
 
@@ -2668,80 +2661,6 @@ struct SwiftInterfaceBuilder: Sendable {
         )
     }
 
-    /// Finds the index of the first colon that is not nested inside brackets, parentheses, or angle brackets.
-    ///
-    /// Used to separate parameter labels from types in argument lists. Respects the arrow
-    /// operator `->` by not treating `<` after `-` as a depth increase.
-    ///
-    /// - Parameter string: The string to search.
-    /// - Returns: The index of the first top-level colon, or `nil` if none exists.
-    private func firstTopLevelColon(in string: String) -> String.Index? {
-        var depth = 0
-        var previousCharacter: Character?
-
-        for index in string.indices {
-            let character = string[index]
-            switch character {
-            case "(", "[", "<":
-                if character == "<" && previousCharacter == "-" {
-                    break
-                }
-                depth += 1
-            case ")", "]", ">":
-                if character == ">" && previousCharacter == "-" {
-                    break
-                }
-                depth -= 1
-            case ":" where depth == 0:
-                return index
-            default:
-                break
-            }
-
-            previousCharacter = character
-        }
-
-        return nil
-    }
-
-    /// Finds the last top-level `->` in a type string, ignoring nested delimiters.
-    private func topLevelArrowRange(in string: String) -> Range<String.Index>? {
-        var depth = 0
-        var previousCharacter: Character?
-        var arrowRange: Range<String.Index>?
-
-        for index in string.indices {
-            let character = string[index]
-            if character == ">" && previousCharacter == "-" && depth == 0 {
-                let lowerBound = string.index(before: index)
-                arrowRange = lowerBound..<string.index(after: index)
-                previousCharacter = character
-                continue
-            }
-
-            switch character {
-            case "(", "[":
-                depth += 1
-            case "<":
-                if previousCharacter != "-" {
-                    depth += 1
-                }
-            case ")", "]":
-                depth -= 1
-            case ">":
-                if previousCharacter != "-" {
-                    depth -= 1
-                }
-            default:
-                break
-            }
-
-            previousCharacter = character
-        }
-
-        return arrowRange
-    }
-
     /// Splits a string at top-level commas, respecting nested delimiters.
     ///
     /// Commas inside parentheses `()`, angle brackets `<>`, and square brackets `[]` are
@@ -2753,49 +2672,13 @@ struct SwiftInterfaceBuilder: Sendable {
     /// - Throws: ``SwiftInterfaceGeneratorError/unexpectedOutput(_:)`` if delimiters
     ///   are unbalanced.
     func splitTopLevel(_ string: String) throws -> [String] {
-        var parts: [String] = []
-        var current = ""
-        var depth = 0
-        var previousCharacter: Character?
-
-        for character in string {
-            switch character {
-            case "(", "[":
-                depth += 1
-                current.append(character)
-            case "<":
-                if previousCharacter == "-" {
-                    current.append(character)
-                } else {
-                    depth += 1
-                    current.append(character)
-                }
-            case ")", "]", ">":
-                if character == ">" && previousCharacter == "-" {
-                    current.append(character)
-                    previousCharacter = character
-                    continue
-                }
-                depth -= 1
-                current.append(character)
-            case "," where depth == 0:
-                parts.append(current.trimmingCharacters(in: .whitespaces))
-                current.removeAll(keepingCapacity: true)
-            default:
-                current.append(character)
-            }
-            previousCharacter = character
-        }
-
-        if depth != 0 {
+        try parsedTupleType(fromArgumentList: string)?.elements.map { element in
+            var result = element.firstName.map { "\($0.text): " } ?? ""
+            result += element.type.trimmedDescription
+            return result
+        } ?? {
             throw SwiftInterfaceGeneratorError.unexpectedOutput("Unbalanced argument list: \(string)")
-        }
-
-        let trimmed = current.trimmingCharacters(in: .whitespaces)
-        if !trimmed.isEmpty {
-            parts.append(trimmed)
-        }
-        return parts
+        }()
     }
 
     /// Derives the module name from a framework binary URL.
